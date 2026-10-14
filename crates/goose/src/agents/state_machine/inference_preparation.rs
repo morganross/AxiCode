@@ -50,10 +50,15 @@ impl InferenceRequestPreparer<Session> for GooseInferenceRequestPreparer<'_> {
         }
         let tools =
             crate::agents::reply_parts::prepare_inference_tools(input.tools, code_execution_mode);
+        let model = session
+            .model_config
+            .as_ref()
+            .map(|config| config.model_name.as_str());
         let system_prompt = self.prompt_manager.lock().await.build_system_prompt(
             &session.working_dir,
             input.prompt_parts,
             goose_mode,
+            model,
         );
         let turn = messages_since_kickoff(conversation)?;
         let turn_start = turn
