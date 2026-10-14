@@ -1692,6 +1692,13 @@ fn prompt_error_from_message_content(
                     .data(serde_json::Value::Object(data)),
             )
         }
+        // Every structured provider error is a failed prompt. The shared
+        // inference runner and classic loop both persist these user-only
+        // messages, so clients must not report a successful end-turn.
+        MessageContent::Error(error) => Some(agent_client_protocol::Error::new(
+            -32603,
+            error.message.clone(),
+        )),
         _ => None,
     }
 }
@@ -2892,6 +2899,23 @@ mod tests {
             error.code,
             agent_client_protocol::schema::v1::ErrorCode::AuthRequired
         );
+    }
+
+    #[test]
+    fn quota_message_is_a_failed_prompt_with_the_original_error() {
+        let message = Message::from_provider_error(
+            &goose_providers::errors::ProviderError::RateLimitExceeded {
+                details: "HTTP 429 model_cooldown".into(),
+                retry_delay: Some(std::time::Duration::from_secs(293_136)),
+            },
+        );
+        let error = prompt_error_from_message_content(&message.content[0])
+            .expect("provider quota is not a successful assistant reply");
+        assert_eq!(
+            error.code,
+            agent_client_protocol::schema::v1::ErrorCode::InternalError
+        );
+        assert!(error.message.contains("HTTP 429 model_cooldown"));
     }
 
     #[test]
