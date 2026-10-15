@@ -106,6 +106,12 @@ fn is_permanent_request_failure(message: &str) -> bool {
 
 pub fn should_retry(error: &ProviderError, config: &RetryConfig) -> bool {
     match error {
+        // Returning the original quota error respects Retry-After without
+        // holding an interactive turn open until a distant quota reset.
+        ProviderError::RateLimitExceeded {
+            retry_delay: Some(delay),
+            ..
+        } if *delay > Duration::from_millis(config.max_interval_ms) => false,
         ProviderError::RateLimitExceeded { .. }
         | ProviderError::ServerError(_)
         | ProviderError::NetworkError(_) => true,
@@ -345,6 +351,18 @@ mod tests {
             },
             &config
         ));
+    }
+
+    #[test]
+    fn long_quota_wait_is_returned_but_short_rate_limit_still_retries() {
+        let config = RetryConfig::default();
+        for (seconds, expected) in [(1, true), (30, true), (31, false), (293_136, false)] {
+            let error = ProviderError::RateLimitExceeded {
+                details: "provider quota reset".into(),
+                retry_delay: Some(Duration::from_secs(seconds)),
+            };
+            assert_eq!(should_retry(&error, &config), expected);
+        }
     }
 
     #[test]

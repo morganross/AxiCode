@@ -62,6 +62,7 @@ impl CursorAgentProvider {
     /// Get authentication status from cursor-agent
     async fn get_authentication_status(&self) -> bool {
         Command::new(&self.command)
+            .stdin(Stdio::null())
             .arg("status")
             .output()
             .await
@@ -73,6 +74,9 @@ impl CursorAgentProvider {
     fn prepare_cli_command(&self) -> Command {
         let mut cmd = Command::new(&self.command);
         configure_subprocess(&mut cmd);
+        // Inventory/auth probes must not share the agent transport input.
+        // The chat command explicitly replaces this with its own piped stdin.
+        cmd.stdin(Stdio::null());
         if let Ok(path) = SearchPaths::builder().with_npm().path() {
             cmd.env("PATH", path);
         }

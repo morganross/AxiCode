@@ -241,6 +241,7 @@ impl Agent {
             .with_code_execution_mode(code_execution_active)
             .with_hints(&session.working_dir)
             .with_goose_mode(goose_mode)
+            .with_model(&model_config.model_name)
             .build();
 
         let (tools, toolshim_tools, system_prompt) =

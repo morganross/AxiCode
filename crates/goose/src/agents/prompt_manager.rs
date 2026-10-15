@@ -50,6 +50,8 @@ pub struct SystemPromptBuilder<'a, M> {
     code_execution_mode: bool,
     include_extensions: bool,
     goose_mode: Option<GooseMode>,
+    model_name: Option<String>,
+    family_prompts: Option<bool>,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
@@ -105,6 +107,18 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         self
     }
 
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model_name = Some(model.into());
+        self
+    }
+
+    /// `Some` forces the rich family prompt or the shared thin prompt.
+    /// `None` reads `GOOSE_FAMILY_PROMPTS` from Goose config or the environment.
+    pub fn with_family_prompts(mut self, enabled: bool) -> Self {
+        self.family_prompts = Some(enabled);
+        self
+    }
+
     pub fn build(self) -> String {
         let mut extensions_info = self.extensions_info;
 
@@ -137,6 +151,8 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         let base_prompt = if let Some(override_prompt) = &self.manager.system_prompt_override {
             let sanitized_override_prompt = sanitize_unicode_tags(override_prompt);
             prompt_template::render_string(&sanitized_override_prompt, &context)
+        } else if self.family_prompts.unwrap_or_else(family_prompts_enabled) {
+            render_family_prompt(self.model_name.as_deref().unwrap_or(""), &context)
         } else {
             prompt_template::render_template("system.md", &context)
         }
@@ -232,14 +248,19 @@ impl PromptManager {
         working_dir: &Path,
         prompt_parts: Vec<(String, String)>,
         goose_mode: GooseMode,
+        model: Option<&str>,
     ) -> String {
         self.load_subdirectory_hints(working_dir);
-        self.builder()
+        let mut builder = self
+            .builder()
             .with_prompt_extras(prompt_parts)
             .with_hints(working_dir)
             .with_goose_mode(goose_mode)
-            .without_extensions()
-            .build()
+            .without_extensions();
+        if let Some(model) = model {
+            builder = builder.with_model(model);
+        }
+        builder.build()
     }
 
     /// Override the system prompt with custom text
@@ -262,8 +283,33 @@ impl PromptManager {
             code_execution_mode: false,
             include_extensions: true,
             goose_mode: None,
+            model_name: None,
+            family_prompts: None,
         }
     }
+}
+
+fn family_prompts_enabled() -> bool {
+    crate::config::Config::global()
+        .get_param::<bool>("GOOSE_FAMILY_PROMPTS")
+        .unwrap_or(false)
+}
+
+pub(crate) fn family_template_name(model: &str) -> &'static str {
+    let id = model.to_ascii_lowercase();
+    if id.contains("claude") {
+        "family_anthropic.md"
+    } else if id.contains("gpt") || id.contains("codex") {
+        "family_gpt.md"
+    } else {
+        "family_default.md"
+    }
+}
+
+fn render_family_prompt<T: Serialize>(model: &str, context: &T) -> Result<String, minijinja::Error> {
+    let body = prompt_template::template_source(family_template_name(model))?;
+    let context_block = prompt_template::template_source("prompt_context.md")?;
+    prompt_template::render_string(&format!("{body}\n\n{context_block}"), context)
 }
 
 #[cfg(test)]
@@ -339,6 +385,7 @@ mod tests {
                 "# Extensions\n\n## developer".to_string(),
             )],
             GooseMode::Auto,
+            None,
         );
 
         assert!(prompt.contains("## developer"));
@@ -568,5 +615,49 @@ mod tests {
             .build();
 
         assert_snapshot!(system_prompt);
+    }
+
+    #[test]
+    fn thin_prompt_is_shared_until_family_prompts_are_enabled() {
+        let manager = PromptManager::new();
+        let thin = manager.builder().with_model("claude-sonnet").build();
+        assert!(thin.contains("Use Markdown formatting for all responses."));
+        assert!(!thin.contains("Keep replies short."));
+
+        let claude = manager
+            .builder()
+            .with_family_prompts(true)
+            .with_model("Claude-Sonnet")
+            .build();
+        let gpt = manager
+            .builder()
+            .with_family_prompts(true)
+            .with_model("gpt-5.6-luna")
+            .build();
+        let other = manager
+            .builder()
+            .with_family_prompts(true)
+            .with_model("gemini-2.5-pro")
+            .build();
+        assert!(claude.contains("Keep replies short."));
+        assert!(claude.contains("# Extensions"));
+        assert!(!claude.contains("Finish verification before you answer."));
+        assert!(gpt.contains("Finish verification before you answer."));
+        assert!(other.contains("Match the request before you stop."));
+        assert!(!other.contains("Keep replies short."));
+        assert_eq!(family_template_name("chatgpt_codex"), "family_gpt.md");
+        assert_eq!(family_template_name(""), "family_default.md");
+    }
+
+    #[test]
+    fn a_custom_system_prompt_replaces_the_family_prompt() {
+        let mut manager = PromptManager::new();
+        manager.set_system_prompt_override("Custom instructions only".to_string());
+        let prompt = manager
+            .builder()
+            .with_family_prompts(true)
+            .with_model("claude-opus")
+            .build();
+        assert_eq!(prompt, "Custom instructions only");
     }
 }

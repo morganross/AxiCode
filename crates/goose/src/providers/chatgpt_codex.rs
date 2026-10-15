@@ -835,6 +835,14 @@ impl ChatGptCodexAuthProvider {
                 return Ok(token_data);
             }
 
+            // Empty refresh credentials are access-only copies owned by a local CLI.
+            // Preserve that copy and let its owner renew it; never start another login.
+            if token_data.refresh_token.is_empty() {
+                anyhow::bail!(
+                    "The local CLI must renew this access token; the existing login was retained"
+                );
+            }
+
             tracing::debug!("Token expired, attempting refresh");
             match refresh_access_token_with_issuer(ISSUER, &token_data.refresh_token).await {
                 Ok(new_tokens) => {

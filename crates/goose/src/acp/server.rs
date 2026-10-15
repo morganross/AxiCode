@@ -1688,6 +1688,13 @@ fn prompt_error_from_message_content(
                     .data(serde_json::Value::Object(data)),
             )
         }
+        // Every structured provider error is a failed prompt. The shared
+        // inference runner and classic loop both persist these user-only
+        // messages, so clients must not report a successful end-turn.
+        MessageContent::Error(error) => Some(agent_client_protocol::Error::new(
+            -32603,
+            error.message.clone(),
+        )),
         _ => None,
     }
 }
@@ -2715,11 +2722,49 @@ impl agent_client_protocol::ConnectTo<Client> for GooseAgentConnection {
     }
 }
 
+// The Linux stdio adapter can return WouldBlock after an otherwise valid
+// request when the IDE holds the pipe open between turns. Treat that as an
+// idle read and retry when the runtime wakes us instead of ending the agent.
+struct RetryWouldBlock<R> {
+    reader: R,
+    delay: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<R: futures::io::AsyncRead + Unpin> futures::io::AsyncRead for RetryWouldBlock<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        use std::future::Future;
+        if let Some(delay) = self.delay.as_mut() {
+            if delay.as_mut().poll(cx).is_pending() {
+                return std::task::Poll::Pending;
+            }
+            self.delay = None;
+        }
+        match std::pin::Pin::new(&mut self.reader).poll_read(cx, buf) {
+            std::task::Poll::Ready(Err(error))
+                if error.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                let mut delay = Box::pin(tokio::time::sleep(std::time::Duration::from_millis(10)));
+                let _ = delay.as_mut().poll(cx);
+                self.delay = Some(delay);
+                std::task::Poll::Pending
+            }
+            other => other,
+        }
+    }
+}
+
 pub async fn run(builtins: Vec<String>, enable_scheduler: bool) -> Result<()> {
     info!("listening on stdio");
 
     let outgoing = tokio::io::stdout().compat_write();
-    let incoming = tokio::io::stdin().compat();
+    let incoming = RetryWouldBlock {
+        reader: tokio::io::stdin().compat(),
+        delay: None,
+    };
 
     let server = crate::acp::server_factory::AcpServer::new(
         crate::acp::server_factory::AcpServerFactoryConfig {
@@ -2849,6 +2894,23 @@ mod tests {
             error.code,
             agent_client_protocol::schema::v1::ErrorCode::AuthRequired
         );
+    }
+
+    #[test]
+    fn quota_message_is_a_failed_prompt_with_the_original_error() {
+        let message = Message::from_provider_error(
+            &goose_providers::errors::ProviderError::RateLimitExceeded {
+                details: "HTTP 429 model_cooldown".into(),
+                retry_delay: Some(std::time::Duration::from_secs(293_136)),
+            },
+        );
+        let error = prompt_error_from_message_content(&message.content[0])
+            .expect("provider quota is not a successful assistant reply");
+        assert_eq!(
+            error.code,
+            agent_client_protocol::schema::v1::ErrorCode::InternalError
+        );
+        assert!(error.message.contains("HTTP 429 model_cooldown"));
     }
 
     #[test]
