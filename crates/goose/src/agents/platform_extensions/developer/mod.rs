@@ -9,7 +9,7 @@ use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
-use edit::{EditTools, FileEditParams, FileWriteParams};
+use edit::{EditTools, FileEditParams, FileReadParams, FileWriteParams};
 use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
 use rmcp::model::{
@@ -51,8 +51,9 @@ fn developer_instructions() -> &'static str {
 
             For editing software, prefer the flow of using tree to understand the codebase structure
             and file sizes. When you need to search, prefer findstr or Select-String (via shell).
-            Then use type or Get-Content to gather the context you need, always reading before
-            editing. Use write and edit to efficiently make changes. Test and verify as appropriate.
+            Then use read to gather the context you need, always reading before editing.
+            Use its line and limit parameters for focused reads.
+            Use write and edit to efficiently make changes. Test and verify as appropriate.
         "}
     } else {
         indoc! {"
@@ -65,7 +66,8 @@ fn developer_instructions() -> &'static str {
 
             For editing software, prefer the flow of using tree to understand the codebase structure
             and file sizes. When you need to search, prefer rg which correctly respects gitignored
-            content. Then use cat or sed to gather the context you need, always reading before editing.
+            content. Then use read to gather the context you need, always reading before editing.
+            Use its line and limit parameters for focused reads.
             Use write and edit to efficiently make changes. Test and verify as appropriate.
 
             When running Python scripts or commands, always use `python3` instead of `python`.
@@ -107,6 +109,18 @@ impl DeveloperClient {
 
     pub(crate) fn get_tools() -> Vec<Tool> {
         vec![
+            Tool::new(
+                "read".to_string(),
+                "Read a text file. Supports an optional 1-based starting line and maximum line count.".to_string(),
+                Self::schema::<FileReadParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
             Tool::new(
                 "write".to_string(),
                 "Create a new file or overwrite an existing file. Creates parent directories if needed.".to_string(),
@@ -210,6 +224,12 @@ impl McpClientTrait for DeveloperClient {
     ) -> Result<CallToolResult, Error> {
         let working_dir = ctx.working_dir.as_deref();
         match name {
+            "read" => match Self::parse_args::<FileReadParams>(arguments) {
+                Ok(params) => Ok(self.edit_tools.file_read_with_cwd(params, working_dir)),
+                Err(error) => Ok(CallToolResult::error(vec![visible_text(format!(
+                    "Error: {error}"
+                ))])),
+            },
             "shell" => match Self::parse_args::<ShellParams>(arguments) {
                 Ok(params) => Ok(self
                     .shell_tool
@@ -276,7 +296,10 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
 
-        assert_eq!(names, vec!["write", "edit", "shell", "tree", "read_image"]);
+        assert_eq!(
+            names,
+            vec!["read", "write", "edit", "shell", "tree", "read_image"]
+        );
     }
 
     #[test]
@@ -353,6 +376,18 @@ mod tests {
             fs::read_to_string(cwd.join("notes.txt")).unwrap(),
             "updated line"
         );
+
+        let read = client
+            .call_tool(
+                &ctx,
+                "read",
+                Some(object!({"path": "notes.txt", "line": 1, "limit": 1})),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.is_error, Some(false));
+        assert_eq!(first_text(&read), "updated line");
     }
 
     #[cfg(not(windows))]

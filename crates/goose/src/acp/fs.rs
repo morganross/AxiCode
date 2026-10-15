@@ -404,6 +404,8 @@ impl McpClientTrait for AcpTools {
             .list_tools(session_id, next_cursor, cancellation_token)
             .await?;
         if self.fs_read {
+            // The IDE-backed reader replaces the local reader when advertised.
+            result.tools.retain(|tool| tool.name != "read");
             result.tools.insert(0, read_tool());
         }
         Ok(result)
