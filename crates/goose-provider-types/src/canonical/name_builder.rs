@@ -50,6 +50,7 @@ pub fn map_provider_name(provider: &str) -> &str {
         "gcp_vertex_ai" => "google-vertex",
         "gemini_oauth" => "google",
         "chatgpt_codex" => "openai",
+        "github_copilot" => "github-copilot",
         "databricks_v2" => "databricks",
         "zhipu" => "zhipuai",
         "together" => "togetherai",
