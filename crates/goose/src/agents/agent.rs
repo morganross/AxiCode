@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::stream::BoxStream;
-use futures::{stream, FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use goose_agent::inference::ends_with_successful_tool_response;
 use tracing_futures::Instrument;
 
@@ -18,47 +18,47 @@ use super::tool_confirmation_coordinator::{
 };
 use super::tool_confirmation_router::ToolConfirmationRouter;
 use super::tool_execution::{
-    tool_stream, ApprovalToolContext, ToolCallResult, ToolStream, ToolStreamItem,
-    CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE,
+    ApprovalToolContext, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE, ToolCallResult,
+    ToolStream, ToolStreamItem, tool_stream,
 };
 use crate::action_required_manager::ElicitationOutcome;
+use crate::agents::AgentEvent;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult};
 use crate::agents::extension_manager::{
     CallRequest, ExtensionLease, ExtensionManager, ExtensionManagerCapabilities,
 };
 use crate::agents::final_output_tool::{
-    structured_output_unsupported_message, FINAL_OUTPUT_CONTINUATION_MESSAGE,
-    FINAL_OUTPUT_TOOL_NAME,
+    FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME,
+    structured_output_unsupported_message,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::state_machine::{
-    has_unapplied_tool_confirmation_response, pending_tool_confirmations,
-    persist_tool_confirmation_decision, run_goose, subagent_cancelled_message, BangShellOperation,
-    CompactionOperation, DoctorOperation, Emitter, EntryHookOperation, ExitOnErrorOperation,
-    ForegroundSubagentOperation, GooseEffect, GooseInferenceProvider,
-    GooseInferenceRequestPreparer, InferenceRunner, MaxTurnsOperation, Operation, ProjectOperation,
-    RecipeOperation, RetryOperation, SkillOperation, SlashCommandOperation, StateMachine,
-    StatusOperation, SteerOperation, SteerQueue, Step, StopHookOperation, ToolApprovalOperation,
-    ToolExecutionOperation, ToolPairCompactionOperation, UnknownToolOperation, MAX_TURNS_MESSAGE,
+    BangShellOperation, CompactionOperation, DoctorOperation, Emitter, EntryHookOperation,
+    ExitOnErrorOperation, ForegroundSubagentOperation, GooseEffect, GooseInferenceProvider,
+    GooseInferenceRequestPreparer, InferenceRunner, MAX_TURNS_MESSAGE, MaxTurnsOperation,
+    Operation, ProjectOperation, RecipeOperation, RetryOperation, SkillOperation,
+    SlashCommandOperation, StateMachine, StatusOperation, SteerOperation, SteerQueue, Step,
+    StopHookOperation, ToolApprovalOperation, ToolExecutionOperation, ToolPairCompactionOperation,
+    UnknownToolOperation, has_unapplied_tool_confirmation_response, pending_tool_confirmations,
+    persist_tool_confirmation_decision, run_goose, subagent_cancelled_message,
 };
 use crate::agents::subagent_handler::ForegroundSubagentRunner;
 use crate::agents::types::{
-    SessionConfig, SharedProvider, DEFAULT_ON_FAILURE_TIMEOUT_SECONDS,
-    DEFAULT_RETRY_TIMEOUT_SECONDS,
+    DEFAULT_ON_FAILURE_TIMEOUT_SECONDS, DEFAULT_RETRY_TIMEOUT_SECONDS, SessionConfig,
+    SharedProvider,
 };
-use crate::agents::AgentEvent;
 use crate::config::extensions::name_to_key;
 use crate::config::permission::PermissionManager;
 use crate::config::{Config, GooseMode};
 use crate::context_mgmt::{
-    check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
+    DEFAULT_COMPACTION_THRESHOLD, check_if_compaction_needed, compact_messages,
 };
 use crate::conversation::message::{
     ActionRequiredData, InferenceMetadata, Message, MessageContent, MessageUsage, ProviderMetadata,
     SystemNotificationType,
 };
-use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
+use crate::conversation::{Conversation, debug_conversation_fix, fix_conversation};
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::{Permission, PermissionConfirmation};
@@ -81,7 +81,7 @@ use rmcp::model::{
     GetPromptResult, Prompt, Tool,
 };
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -2870,7 +2870,7 @@ impl Agent {
                         self.provider().await?,
                         model_config.clone(),
                         session_config.id.clone(),
-                        conversation.clone(),
+                        &conversation,
                         tool_call_cut_off,
                         current_turn_tool_count,
                     )
@@ -4072,12 +4072,12 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::ToolCallContext;
     use crate::agents::gen_ai_telemetry::{self, test_support::SpanFieldCapture};
     use crate::agents::mcp_client::{Error as McpClientError, McpClientTrait};
-    use crate::agents::ToolCallContext;
     use crate::plugins::discovery::{DiscoveredPlugin, PluginScope};
     use crate::providers::base::{
-        stream_from_single_message, MessageStream, ModelInfo, PermissionRouting,
+        MessageStream, ModelInfo, PermissionRouting, stream_from_single_message,
     };
     use crate::recipe::Response;
     use crate::session::session_manager::SessionType;
@@ -4504,12 +4504,14 @@ mod tests {
             .await;
         result.unwrap().result.await.unwrap();
 
-        assert!(agent
-            .extension_manager
-            .list_extensions()
-            .await
-            .unwrap()
-            .contains(&"analyze".to_string()));
+        assert!(
+            agent
+                .extension_manager
+                .list_extensions()
+                .await
+                .unwrap()
+                .contains(&"analyze".to_string())
+        );
         let stored_session = agent
             .config
             .session_manager
@@ -4518,10 +4520,12 @@ mod tests {
             .unwrap();
         let stored_extensions =
             EnabledExtensionsState::from_extension_data(&stored_session.extension_data).unwrap();
-        assert!(stored_extensions
-            .extensions
-            .iter()
-            .any(|config| config.key() == "analyze"));
+        assert!(
+            stored_extensions
+                .extensions
+                .iter()
+                .any(|config| config.key() == "analyze")
+        );
     }
 
     #[test]
@@ -5396,9 +5400,11 @@ mod tests {
         ));
         assert!(err.to_string().contains("Invalid thinking effort"));
         assert_eq!(provider.effort_calls(), ["bogus"]);
-        assert!(persisted_thinking_effort(&agent, &session_id)
-            .await
-            .is_none());
+        assert!(
+            persisted_thinking_effort(&agent, &session_id)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -5418,9 +5424,11 @@ mod tests {
             err.downcast_ref::<ProviderError>(),
             Some(ProviderError::RequestFailed(_))
         ));
-        assert!(persisted_thinking_effort(&agent, &session_id)
-            .await
-            .is_none());
+        assert!(
+            persisted_thinking_effort(&agent, &session_id)
+                .await
+                .is_none()
+        );
     }
 
     const ALWAYS_BLOCK_SCRIPT: &str = r#"#!/bin/sh
@@ -5928,25 +5936,33 @@ echo start >> "$PLUGIN_ROOT/hook.log"
         let reply_fields = capture_legacy_reply_fields("reply", Some("true")).await?;
         assert_eq!(reply_fields["user_message"], "input-super-secret-token");
         assert_eq!(reply_fields["trace_input"], "input-super-secret-token");
-        assert!(reply_fields["gen_ai.input.messages"]
-            .as_str()
-            .unwrap()
-            .contains("input-super-secret-token"));
-        assert!(reply_fields["gen_ai.output.messages"]
-            .as_str()
-            .unwrap()
-            .contains("output-super-secret-token"));
+        assert!(
+            reply_fields["gen_ai.input.messages"]
+                .as_str()
+                .unwrap()
+                .contains("input-super-secret-token")
+        );
+        assert!(
+            reply_fields["gen_ai.output.messages"]
+                .as_str()
+                .unwrap()
+                .contains("output-super-secret-token")
+        );
 
         let stream_fields = capture_legacy_reply_fields("reply_stream", Some("true")).await?;
         assert_eq!(stream_fields["trace_output"], "output-super-secret-token");
-        assert!(stream_fields["gen_ai.input.messages"]
-            .as_str()
-            .unwrap()
-            .contains("input-super-secret-token"));
-        assert!(stream_fields["gen_ai.output.messages"]
-            .as_str()
-            .unwrap()
-            .contains("output-super-secret-token"));
+        assert!(
+            stream_fields["gen_ai.input.messages"]
+                .as_str()
+                .unwrap()
+                .contains("input-super-secret-token")
+        );
+        assert!(
+            stream_fields["gen_ai.output.messages"]
+                .as_str()
+                .unwrap()
+                .contains("output-super-secret-token")
+        );
         Ok(())
     }
 
@@ -6067,10 +6083,12 @@ echo start >> "$PLUGIN_ROOT/hook.log"
         assert!(persisted.metadata.user_visible);
         assert!(!persisted.metadata.agent_visible);
         assert!(persisted.metadata.output_token_limit_reached);
-        assert!(conversation
-            .agent_visible_messages()
-            .iter()
-            .all(|message| message.id.as_deref() != Some("provider-output-limit")));
+        assert!(
+            conversation
+                .agent_visible_messages()
+                .iter()
+                .all(|message| message.id.as_deref() != Some("provider-output-limit"))
+        );
 
         Ok(())
     }
@@ -6596,10 +6614,8 @@ echo start >> "$PLUGIN_ROOT/hook.log"
     const DENY_AND_RECORD_SCRIPT: &str = "#!/bin/sh\ncat >> \"$PLUGIN_ROOT/pre.log\"\nprintf '\\n' >> \"$PLUGIN_ROOT/pre.log\"\necho \"blocked by test policy\" >&2\nexit 2\n";
     /// Logs its stdin like the others, writes nothing to stdout, and exits
     /// non-zero. That is a hook that ran but never returned a decision.
-    const ABNORMAL_EXIT_AND_RECORD_SCRIPT: &str =
-        "#!/bin/sh\ncat >> \"$PLUGIN_ROOT/pre.log\"\nprintf '\\n' >> \"$PLUGIN_ROOT/pre.log\"\necho boom >&2\nexit 3\n";
-    const HOOK_FAILURE_REFUSAL: &str =
-        "Tool call blocked because policy hook `test-plugin` could not complete: \
+    const ABNORMAL_EXIT_AND_RECORD_SCRIPT: &str = "#!/bin/sh\ncat >> \"$PLUGIN_ROOT/pre.log\"\nprintf '\\n' >> \"$PLUGIN_ROOT/pre.log\"\necho boom >&2\nexit 3\n";
+    const HOOK_FAILURE_REFUSAL: &str = "Tool call blocked because policy hook `test-plugin` could not complete: \
          the hook exited with status 3 and no usable decision. \
          That hook is configured to block on failure.";
 

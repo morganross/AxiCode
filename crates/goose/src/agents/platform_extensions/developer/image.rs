@@ -29,7 +29,7 @@ pub struct ImageReadParams {
     pub crop: Option<CropParams>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CropParams {
     /// Left edge of the crop rectangle in pixels.
     pub x: u32,
@@ -123,6 +123,18 @@ async fn load_image(
     let bytes = load_image_bytes(&params.source, working_dir).await?;
     ensure_image_size(bytes.len() as u64)?;
 
+    let crop = params.crop.clone();
+    static DECODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let permit = DECODERS.acquire().await.map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        decode_image(bytes, crop.as_ref())
+    })
+    .await
+    .map_err(|error| format!("image worker failed: {error}"))?
+}
+
+fn decode_image(bytes: Vec<u8>, crop: Option<&CropParams>) -> Result<LoadedImage, String> {
     let format = image::guess_format(&bytes).map_err(|_| {
         "unsupported image format; supported formats are png, jpeg, gif, and webp".to_string()
     })?;
@@ -131,7 +143,8 @@ async fn load_image(
         .map_err(|error| format!("failed to decode image: {error}"))?;
     let (original_width, original_height) = image.dimensions();
 
-    let Some(crop) = &params.crop else {
+    let Some(crop) = crop else {
+        drop(image);
         return Ok(LoadedImage {
             data: base64::prelude::BASE64_STANDARD.encode(&bytes),
             mime_type: mime_type.to_string(),
@@ -146,6 +159,7 @@ async fn load_image(
 
     validate_crop(crop, original_width, original_height)?;
     let cropped = image.crop_imm(crop.x, crop.y, crop.width, crop.height);
+    drop(image);
     let mut cropped_bytes = Cursor::new(Vec::new());
     cropped
         .write_to(&mut cropped_bytes, image::ImageFormat::Png)
@@ -173,25 +187,38 @@ async fn load_image_bytes(source: &str, working_dir: Option<&Path>) -> Result<Ve
                 let path = url
                     .to_file_path()
                     .map_err(|_| "invalid file URL".to_string())?;
-                load_file_bytes(path)
+                load_local_bytes(path).await
             }
-            _ => load_file_bytes(resolve_path(source, working_dir)),
+            _ => load_local_bytes(resolve_path(source, working_dir)).await,
         }
     } else {
-        load_file_bytes(resolve_path(source, working_dir))
+        load_local_bytes(resolve_path(source, working_dir)).await
     }
 }
 
+async fn load_local_bytes(path: PathBuf) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || load_file_bytes(path))
+        .await
+        .map_err(|error| format!("image read worker failed: {error}"))?
+}
+
 async fn load_url_bytes(url: url::Url) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!(
-            "goose/",
-            env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/aaif-goose/goose)"
-        ))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("failed to create HTTP client: {error}"))?;
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = if let Some(client) = CLIENT.get() {
+        client.clone()
+    } else {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!(
+                "goose/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/aaif-goose/goose)"
+            ))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| format!("failed to create HTTP client: {error}"))?;
+        let _ = CLIENT.set(client.clone());
+        CLIENT.get().cloned().unwrap_or(client)
+    };
 
     let response = client
         .get(url)

@@ -4,9 +4,9 @@ pub mod shell;
 mod shell_output_streaming;
 pub mod tree;
 
+use crate::agents::ToolCallContext;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
-use crate::agents::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
 use edit::{EditTools, FileEditParams, FileReadParams, FileWriteParams};
@@ -16,9 +16,9 @@ use rmcp::model::{
     Annotations, CallToolResult, ContentBlock, Implementation, InitializeResult, JsonObject,
     ListToolsResult, ServerCapabilities, TextContent, Tool, ToolAnnotations,
 };
-use schemars::{schema_for, JsonSchema};
+use schemars::{JsonSchema, schema_for};
 use serde_json::Value;
-use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
+use shell::{ShellOutput, ShellParams, ShellTool, shell_display_name};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tree::{TreeParams, TreeTool};
@@ -199,6 +199,32 @@ impl DeveloperClient {
     }
 }
 
+async fn blocking_tool(
+    cancel: CancellationToken,
+    work: impl FnOnce() -> CallToolResult + Send + 'static,
+) -> CallToolResult {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let permit = tokio::select! {
+        permit = SLOTS.acquire() => match permit { Ok(permit) => permit, Err(_) => return CallToolResult::error(vec![visible_text("Tool worker stopped")]) },
+        _ = cancel.cancelled() => return CallToolResult::error(vec![visible_text("Tool request cancelled")]),
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        if cancel.is_cancelled() {
+            CallToolResult::error(vec![visible_text("Tool request cancelled")])
+        } else {
+            work()
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            CallToolResult::error(vec![visible_text(format!("Tool worker failed: {error}"))])
+        }
+    }
+}
+
 #[async_trait]
 impl McpClientTrait for DeveloperClient {
     async fn list_tools(
@@ -225,7 +251,14 @@ impl McpClientTrait for DeveloperClient {
         let working_dir = ctx.working_dir.as_deref();
         match name {
             "read" => match Self::parse_args::<FileReadParams>(arguments) {
-                Ok(params) => Ok(self.edit_tools.file_read_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    let tool = self.edit_tools.clone();
+                    let directory = working_dir.map(std::path::Path::to_path_buf);
+                    Ok(blocking_tool(cancel_token, move || {
+                        tool.file_read_with_cwd(params, directory.as_deref())
+                    })
+                    .await)
+                }
                 Err(error) => Ok(CallToolResult::error(vec![visible_text(format!(
                     "Error: {error}"
                 ))])),
@@ -244,19 +277,40 @@ impl McpClientTrait for DeveloperClient {
                 Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
             },
             "write" => match Self::parse_args::<FileWriteParams>(arguments) {
-                Ok(params) => Ok(self.edit_tools.file_write_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    let tool = self.edit_tools.clone();
+                    let directory = working_dir.map(std::path::Path::to_path_buf);
+                    Ok(blocking_tool(cancel_token, move || {
+                        tool.file_write_with_cwd(params, directory.as_deref())
+                    })
+                    .await)
+                }
                 Err(error) => Ok(CallToolResult::error(vec![visible_text(format!(
                     "Error: {error}"
                 ))])),
             },
             "edit" => match Self::parse_args::<FileEditParams>(arguments) {
-                Ok(params) => Ok(self.edit_tools.file_edit_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    let tool = self.edit_tools.clone();
+                    let directory = working_dir.map(std::path::Path::to_path_buf);
+                    Ok(blocking_tool(cancel_token, move || {
+                        tool.file_edit_with_cwd(params, directory.as_deref())
+                    })
+                    .await)
+                }
                 Err(error) => Ok(CallToolResult::error(vec![visible_text(format!(
                     "Error: {error}"
                 ))])),
             },
             "tree" => match Self::parse_args::<TreeParams>(arguments) {
-                Ok(params) => Ok(self.tree_tool.tree_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    let tool = self.tree_tool.clone();
+                    let directory = working_dir.map(std::path::Path::to_path_buf);
+                    Ok(blocking_tool(cancel_token, move || {
+                        tool.tree_with_cwd(params, directory.as_deref())
+                    })
+                    .await)
+                }
                 Err(error) => Ok(CallToolResult::error(vec![visible_text(format!(
                     "Error: {error}"
                 ))])),

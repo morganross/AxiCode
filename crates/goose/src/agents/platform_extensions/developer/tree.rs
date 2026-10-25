@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 
 use ignore::WalkBuilder;
@@ -205,9 +206,19 @@ fn relative_components(path: &Path) -> Option<Vec<String>> {
 }
 
 fn count_file_lines(path: &Path) -> usize {
-    match fs::read_to_string(path) {
-        Ok(content) => content.lines().count(),
-        Err(_) => 0,
+    let Ok(file) = fs::File::open(path) else {
+        return 0;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut count = 0;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return count,
+            Ok(_) => count += 1,
+            Err(_) => return 0,
+        }
     }
 }
 

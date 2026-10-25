@@ -2,10 +2,10 @@ pub use goose_context_management::structured;
 
 use crate::conversation::message::MessageMetadata;
 use crate::conversation::message::{Message, MessageContent};
-use crate::conversation::{merge_consecutive_messages, Conversation};
+use crate::conversation::{Conversation, merge_consecutive_messages};
 use crate::providers::base::Provider;
 #[cfg(test)]
-use crate::providers::base::{stream_from_single_message, MessageStream};
+use crate::providers::base::{MessageStream, stream_from_single_message};
 use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
 use goose_providers::conversation::token_usage::ProviderUsage;
@@ -493,7 +493,7 @@ pub fn maybe_summarize_tool_pairs(
     provider: Arc<dyn Provider>,
     model_config: ModelConfig,
     session_id: String,
-    conversation: Conversation,
+    conversation: &Conversation,
     cutoff: usize,
     protect_last_n: usize,
 ) -> Option<JoinHandle<Vec<(Message, String)>>> {
@@ -566,6 +566,7 @@ pub fn maybe_summarize_tool_pairs(
         return None;
     }
 
+    let conversation = conversation.clone();
     Some(tokio::spawn(async move {
         let mut results = Vec::new();
         for tool_id in grouped_tool_ids {
@@ -1212,7 +1213,7 @@ mod tests {
             provider.clone(),
             provider.config.clone(),
             "test-session-id".to_string(),
-            conversation,
+            &conversation,
             2,
             0,
         )
@@ -1269,7 +1270,7 @@ mod tests {
         assert_eq!(compute_tool_call_cutoff(128_000, 0.8), 15); // 102K effective
         assert_eq!(compute_tool_call_cutoff(200_000, 0.8), 24); // 160K effective
         assert_eq!(compute_tool_call_cutoff(1_000_000, 0.8), 120); // 800K effective
-                                                                   // Clamp at minimum
+        // Clamp at minimum
         assert_eq!(compute_tool_call_cutoff(50_000, 0.8), 10);
         assert_eq!(compute_tool_call_cutoff(10_000, 0.8), 10);
         // Clamp at maximum (500)
@@ -1277,7 +1278,7 @@ mod tests {
         // Lower compaction threshold means earlier summarization
         assert_eq!(compute_tool_call_cutoff(200_000, 0.3), 10); // 60K effective
         assert_eq!(compute_tool_call_cutoff(1_000_000, 0.5), 75); // 500K effective
-                                                                  // Invalid threshold falls back to default 0.8
+        // Invalid threshold falls back to default 0.8
         assert_eq!(compute_tool_call_cutoff(200_000, 0.0), 24); // falls back to 0.8
         assert_eq!(compute_tool_call_cutoff(200_000, -1.0), 24); // falls back to 0.8
     }

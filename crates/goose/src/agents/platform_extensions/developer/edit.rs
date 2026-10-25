@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use rmcp::model::{Annotations, CallToolResult, ContentBlock, TextContent};
@@ -51,11 +52,8 @@ impl EditTools {
     ) -> CallToolResult {
         let path = resolve_path(&params.path, working_dir);
 
-        match fs::read_to_string(&path) {
-            Ok(content) => {
-                let content = apply_line_limit(&content, params.line, params.limit);
-                CallToolResult::success(vec![visible_text(content)])
-            }
+        match read_line_range(&path, params.line, params.limit) {
+            Ok(content) => CallToolResult::success(vec![visible_text(content)]),
             Err(error) => CallToolResult::error(vec![visible_text(format!(
                 "Failed to read {}: {}",
                 params.path, error
@@ -155,9 +153,17 @@ impl Default for EditTools {
 }
 
 pub fn string_replace(content: &str, before: &str, after: &str) -> Result<String, String> {
-    let matches: Vec<_> = content.match_indices(before).collect();
+    let mut first_matches = Vec::with_capacity(2);
+    let count = content
+        .match_indices(before)
+        .inspect(|item| {
+            if first_matches.len() < 2 {
+                first_matches.push(*item);
+            }
+        })
+        .count();
 
-    match matches.len() {
+    match count {
         0 => {
             let suggestion = find_similar_context(content, before);
             let mut msg = "No match found for the specified text.".to_string();
@@ -175,7 +181,7 @@ pub fn string_replace(content: &str, before: &str, after: &str) -> Result<String
                 n
             );
 
-            for (i, (pos, _)) in matches.iter().enumerate().take(2) {
+            for (i, (pos, _)) in first_matches.iter().enumerate() {
                 let line_num = count_lines_before(content, *pos);
                 let context = get_line_context(content, line_num, 1);
                 msg.push_str(&format!(
@@ -195,20 +201,42 @@ pub fn string_replace(content: &str, before: &str, after: &str) -> Result<String
     }
 }
 
+fn read_line_range(path: &Path, line: Option<u32>, limit: Option<u32>) -> io::Result<String> {
+    if line.is_none() && limit.is_none() {
+        return fs::read_to_string(path);
+    }
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    let start = line.unwrap_or(1).saturating_sub(1) as usize;
+    let count = limit.map(|n| n as usize).unwrap_or(usize::MAX);
+    let mut output = String::new();
+    let mut current = String::new();
+    let mut index = 0usize;
+    // Continue validation past the selected range: an invalid UTF-8 suffix must
+    // retain the prior read_to_string error contract, without retaining all lines.
+    loop {
+        current.clear();
+        if reader.read_line(&mut current)? == 0 {
+            break;
+        }
+        if index >= start && index.saturating_sub(start) < count {
+            output.push_str(&current);
+        }
+        index = index.saturating_add(1);
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
 fn apply_line_limit(content: &str, line: Option<u32>, limit: Option<u32>) -> String {
     if line.is_none() && limit.is_none() {
         return content.to_string();
     }
-    let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let start = line
-        .map(|l| (l as usize).saturating_sub(1))
-        .unwrap_or(0)
-        .min(lines.len());
-    let end = limit
-        .map(|l| start + l as usize)
-        .unwrap_or(lines.len())
-        .min(lines.len());
-    lines[start..end].concat()
+    let start = line.unwrap_or(1).saturating_sub(1) as usize;
+    content
+        .split_inclusive('\n')
+        .skip(start)
+        .take(limit.map(|n| n as usize).unwrap_or(usize::MAX))
+        .collect()
 }
 
 pub fn resolve_path(path: &str, working_dir: Option<&Path>) -> PathBuf {
@@ -234,11 +262,13 @@ fn count_lines_before(content: &str, byte_pos: usize) -> usize {
 }
 
 fn get_line_context(content: &str, target_line: usize, context: usize) -> String {
-    let lines: Vec<&str> = content.lines().collect();
     let start = target_line.saturating_sub(context + 1);
-    let end = (target_line + context).min(lines.len());
-
-    lines[start..end].join("\n")
+    content
+        .lines()
+        .skip(start)
+        .take(target_line.saturating_add(context).saturating_sub(start))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn find_similar_context(content: &str, search: &str) -> Option<String> {
@@ -261,17 +291,17 @@ fn build_file_preview(content: &str, max_lines: usize) -> String {
         return "(file is empty)".to_string();
     }
 
-    let lines: Vec<&str> = content.lines().collect();
-    let preview_end = lines.len().min(max_lines);
-    let mut preview = lines[..preview_end]
-        .iter()
+    let mut lines = content.lines();
+    let mut preview = lines
+        .by_ref()
+        .take(max_lines)
         .enumerate()
         .map(|(index, line)| format!("{:>4}: {}", index + 1, line))
         .collect::<Vec<_>>()
         .join("\n");
-
-    if lines.len() > preview_end {
-        preview.push_str(&format!("\n... ({} more lines)", lines.len() - preview_end));
+    let remaining = lines.count();
+    if remaining > 0 {
+        preview.push_str(&format!("\n... ({} more lines)", remaining));
     }
 
     preview
