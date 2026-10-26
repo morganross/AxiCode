@@ -478,6 +478,30 @@ impl GooseAcpAgent {
         self.on_onboarding_import_apply(req).await
     }
 
+    #[custom_method(HistoryCapabilitiesRequest)]
+    async fn dispatch_history_capabilities(
+        &self,
+        req: HistoryCapabilitiesRequest,
+    ) -> Result<HistoryCapabilitiesResponse, agent_client_protocol::Error> {
+        self.on_history_capabilities(req).await
+    }
+
+    #[custom_method(HistoryRevisionRequest)]
+    async fn dispatch_history_revision(
+        &self,
+        req: HistoryRevisionRequest,
+    ) -> Result<HistoryRevisionResponse, agent_client_protocol::Error> {
+        self.on_history_revision(req).await
+    }
+
+    #[custom_method(HistoryPageRequest)]
+    async fn dispatch_history_page(
+        &self,
+        req: HistoryPageRequest,
+    ) -> Result<HistoryPageResponse, agent_client_protocol::Error> {
+        self.on_history_page(req).await
+    }
+
     #[custom_method(ExportSessionRequest)]
     async fn dispatch_export_session(
         &self,

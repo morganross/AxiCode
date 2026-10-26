@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 16;
+pub const CURRENT_SCHEMA_VERSION: i32 = 17;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 const MILLISECOND_TIMESTAMP_THRESHOLD: i64 = 10_000_000_000;
@@ -528,6 +528,102 @@ impl SessionManager {
         self.storage
             .record_usage_metrics(session_id, schedule_id, current_usage, model, ledger)
             .await
+    }
+
+    pub async fn history_revision(&self, id: &str) -> Result<(String, u64, u64)> {
+        anyhow::ensure!(!id.is_empty() && id.len() <= 1024, "Invalid session id");
+        let mut tx = self.storage.pool().await?.begin().await?;
+        let (total, users): (i64, i64) = sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(role='user'),0) FROM messages WHERE session_id=? AND role IN ('user','assistant')").bind(id).fetch_one(&mut *tx).await?;
+        let revision: String = sqlx::query_scalar(
+            "SELECT revision FROM session_history_revisions WHERE session_id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        tx.commit().await?;
+        Ok((revision, total as u64, users as u64))
+    }
+
+    pub async fn history_page(
+        &self,
+        id: &str,
+        revision: &str,
+        offset: u64,
+        limit: u32,
+    ) -> Result<(Vec<serde_json::Value>, Option<u64>)> {
+        use futures::TryStreamExt;
+        anyhow::ensure!(
+            !id.is_empty() && id.len() <= 1024 && revision.len() == 64,
+            "Invalid history identity"
+        );
+        anyhow::ensure!(
+            limit > 0 && limit <= 128 && offset <= i64::MAX as u64,
+            "Invalid history page bounds"
+        );
+        let mut tx = self.storage.pool().await?.begin().await?;
+        let actual: String = sqlx::query_scalar(
+            "SELECT revision FROM session_history_revisions WHERE session_id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        anyhow::ensure!(
+            actual == revision,
+            "History revision changed; restart snapshot"
+        );
+        // Check sizes in SQL before materializing a potentially oversized tool result.
+        let sizes: Vec<i64> = sqlx::query_scalar("SELECT 6 * (length(CAST(content_json AS BLOB)) + coalesce(length(CAST(metadata_json AS BLOB)), 0) + coalesce(length(CAST(message_id AS BLOB)), 0)) + 512 FROM messages WHERE session_id=? AND role IN ('user','assistant') ORDER BY created_timestamp,id LIMIT ? OFFSET ?")
+            .bind(id).bind(i64::from(limit)+1).bind(offset as i64).fetch_all(&mut *tx).await?;
+        let mut take = 0usize;
+        let mut bytes = 0i64;
+        for size in sizes.iter().take(limit as usize) {
+            if bytes + size > 1_040_384 {
+                break;
+            }
+            bytes += size;
+            take += 1;
+        }
+        anyhow::ensure!(
+            take == sizes.len().min(limit as usize),
+            "History page exceeds byte limit; use smaller page or full export"
+        );
+        let mut messages = Vec::with_capacity(take);
+        {
+            let mut rows = sqlx::query_as::<_, (String,String,i64,Option<String>,Option<String>)>("SELECT role,content_json,created_timestamp,metadata_json,message_id FROM messages WHERE session_id=? AND role IN ('user','assistant') ORDER BY created_timestamp,id LIMIT ? OFFSET ?")
+                .bind(id).bind(take as i64).bind(offset as i64).fetch(&mut *tx);
+            while let Some((role, content, created, metadata, message_id)) = rows.try_next().await?
+            {
+                let mut message = Message::new(
+                    if role == "user" {
+                        Role::User
+                    } else {
+                        Role::Assistant
+                    },
+                    created,
+                    serde_json::from_str(&content)?,
+                );
+                message.metadata = metadata
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
+                if let Some(id) = message_id {
+                    message = message.with_id(id);
+                }
+                messages.push(serde_json::to_value(message)?);
+            }
+        }
+        anyhow::ensure!(
+            serde_json::to_vec(&messages)?.len() <= 1_040_384,
+            "History page exceeds byte limit; use smaller page or full export"
+        );
+        tx.commit().await?;
+        let next = if sizes.len() > take {
+            Some(offset + take as u64)
+        } else {
+            None
+        };
+        Ok((messages, next))
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
@@ -1608,6 +1704,16 @@ impl SessionStorage {
                 )
                 .execute(&mut **tx)
                 .await?;
+            }
+            17 => {
+                sqlx::raw_sql("CREATE TABLE IF NOT EXISTS session_history_revisions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision TEXT NOT NULL);
+                    INSERT OR IGNORE INTO session_history_revisions SELECT id, lower(hex(randomblob(32))) FROM sessions;
+                    CREATE TRIGGER IF NOT EXISTS history_session_insert AFTER INSERT ON sessions BEGIN INSERT OR REPLACE INTO session_history_revisions VALUES (NEW.id, lower(hex(randomblob(32)))); END;
+                    CREATE TRIGGER IF NOT EXISTS history_session_delete AFTER DELETE ON sessions BEGIN DELETE FROM session_history_revisions WHERE session_id=OLD.id; END;
+                    CREATE TRIGGER IF NOT EXISTS history_message_insert AFTER INSERT ON messages BEGIN UPDATE session_history_revisions SET revision=lower(hex(randomblob(32))) WHERE session_id=NEW.session_id; END;
+                    CREATE TRIGGER IF NOT EXISTS history_message_update AFTER UPDATE ON messages BEGIN UPDATE session_history_revisions SET revision=lower(hex(randomblob(32))) WHERE session_id IN (NEW.session_id, OLD.session_id); END;
+                    CREATE TRIGGER IF NOT EXISTS history_message_delete AFTER DELETE ON messages BEGIN UPDATE session_history_revisions SET revision=lower(hex(randomblob(32))) WHERE session_id=OLD.session_id; END;")
+                    .execute(&mut **tx).await?;
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);

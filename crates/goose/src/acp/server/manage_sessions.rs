@@ -102,6 +102,72 @@ impl GooseAcpAgent {
         Ok(DeleteSessionResponse::new())
     }
 
+    pub(super) async fn on_history_capabilities(
+        &self,
+        _req: HistoryCapabilitiesRequest,
+    ) -> Result<HistoryCapabilitiesResponse, agent_client_protocol::Error> {
+        Ok(HistoryCapabilitiesResponse {
+            version: 1,
+            max_page_messages: 128,
+            max_page_bytes: 1_048_576,
+        })
+    }
+    pub(super) async fn on_history_revision(
+        &self,
+        req: HistoryRevisionRequest,
+    ) -> Result<HistoryRevisionResponse, agent_client_protocol::Error> {
+        let (revision, total_messages, raw_user_count) = self
+            .session_manager
+            .history_revision(&req.session_id)
+            .await
+            .internal_err()?;
+        Ok(HistoryRevisionResponse {
+            version: 1,
+            session_id: req.session_id,
+            revision,
+            total_messages,
+            raw_user_count,
+        })
+    }
+    pub(super) async fn on_history_page(
+        &self,
+        req: HistoryPageRequest,
+    ) -> Result<HistoryPageResponse, agent_client_protocol::Error> {
+        if req.limit == 0 || req.limit > 128 || req.offset > i64::MAX as u64 {
+            return Err(
+                agent_client_protocol::Error::invalid_params().data("Invalid history page bounds")
+            );
+        }
+        let (messages, next_offset) = self
+            .session_manager
+            .history_page(&req.session_id, &req.revision, req.offset, req.limit)
+            .await
+            .map_err(|error| {
+                if error.to_string()
+                    == "History page exceeds byte limit; use smaller page or full export"
+                {
+                    agent_client_protocol::Error::new(
+                        -32061,
+                        "History page exceeds byte limit; use smaller page or full export",
+                    )
+                } else if error.to_string() == "History revision changed; restart snapshot" {
+                    agent_client_protocol::Error::new(
+                        -32062,
+                        "History revision changed; restart snapshot",
+                    )
+                } else {
+                    agent_client_protocol::Error::internal_error().data(error.to_string())
+                }
+            })?;
+        Ok(HistoryPageResponse {
+            version: 1,
+            session_id: req.session_id,
+            revision: req.revision,
+            messages,
+            next_offset,
+        })
+    }
+
     pub(super) async fn on_export_session(
         &self,
         req: ExportSessionRequest,

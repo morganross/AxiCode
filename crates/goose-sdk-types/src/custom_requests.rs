@@ -826,6 +826,56 @@ pub struct ExportSessionResponse {
     pub data: String,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_goose/unstable/session/historyCapabilities", response = HistoryCapabilitiesResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCapabilitiesRequest {}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_goose/unstable/session/historyRevision", response = HistoryRevisionResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRevisionRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_goose/unstable/session/historyPage", response = HistoryPageResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPageRequest {
+    pub session_id: String,
+    pub revision: String,
+    pub offset: u64,
+    pub limit: u32,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCapabilitiesResponse {
+    pub version: u32,
+    pub max_page_messages: u32,
+    pub max_page_bytes: u32,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRevisionResponse {
+    pub version: u32,
+    pub session_id: String,
+    pub revision: String,
+    pub total_messages: u64,
+    pub raw_user_count: u64,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPageResponse {
+    pub version: u32,
+    pub session_id: String,
+    pub revision: String,
+    pub messages: Vec<serde_json::Value>,
+    pub next_offset: Option<u64>,
+}
+
 /// Import a session from a serialized session JSON string.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
 #[request(method = "_goose/unstable/session/import", response = ImportSessionResponse)]
