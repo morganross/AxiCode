@@ -18,7 +18,7 @@ use goose_mcp::{AutoVisualiserRouter, ComputerControllerServer, MemoryServer, Tu
 
 #[cfg(feature = "telemetry")]
 use crate::commands::configure::configure_telemetry_consent_dialog;
-use crate::commands::configure::handle_configure;
+use crate::commands::configure::{configure_provider_dialog, handle_configure};
 use crate::commands::info::handle_info;
 use crate::commands::plugin::{handle_plugin_install, handle_plugin_update};
 use crate::commands::recipe::{handle_deeplink, handle_list, handle_open, handle_validate};
@@ -38,7 +38,9 @@ use crate::commands::session::{handle_session_list, handle_session_remove, handl
 use crate::commands::skills::handle_skills_list;
 use crate::recipes::extract_from_cli::extract_recipe_info_from_cli;
 use crate::recipes::recipe::{explain_recipe, render_recipe_as_yaml};
-use crate::session::{build_session, SessionBuilderConfig};
+use crate::session::{
+    build_session, is_provider_unavailable_error, try_build_session, SessionBuilderConfig,
+};
 use goose::agents::Container;
 use goose::session::session_manager::SessionType;
 use goose::session::SessionManager;
@@ -1146,7 +1148,7 @@ enum Command {
 
         /// Disable the Rust-driven parallel orchestrator and fall back to
         /// the single-prompt path that asks the main agent to delegate
-        /// each check via `delegate(... async: true ...)`. The default
+        /// each check via `delegate(...)`. The default
         /// orchestrator dispatches one `goose run` subprocess per check
         /// (capped at 4 concurrent), bounding wall-clock to the slowest
         /// single check rather than waiting on the model to issue
@@ -1310,6 +1312,17 @@ enum TermCommand {
             long_help = "When enabled, anything you type that isn't a valid command will be sent to goose. Supported for zsh, bash, and nu."
         )]
         default: bool,
+
+        /// Record recent shell commands as context for @goose
+        #[arg(
+            long = "dangerous-include-history",
+            help = "Record recent shell commands as context for @goose",
+            long_help = "When enabled, goose records recent shell commands and includes them as \
+                         context when you ask @goose a question.\n\n\
+                         WARNING: command lines can contain credentials and other sensitive data, \
+                         which will be sent to the configured model provider."
+        )]
+        include_history: bool,
     },
 
     /// Log a shell command (called by shell hook)
@@ -1448,7 +1461,8 @@ enum McpProbeElicitation {
 }
 
 async fn handle_mcp_probe(extension_command: String, script_path: Option<String>) -> Result<()> {
-    use goose::agents::{Agent, AgentConfig, ToolCallContext};
+    use goose::agents::extension_manager::CallRequest;
+    use goose::agents::{Agent, AgentConfig};
     use goose::config::ExtensionConfig;
     use rmcp::model::{ElicitRequestParams, ElicitResult, ElicitationAction};
     use tokio_util::sync::CancellationToken;
@@ -1507,7 +1521,6 @@ async fn handle_mcp_probe(extension_command: String, script_path: Option<String>
         std::sync::Arc::new(SessionManager::instance()),
         goose::config::permission::PermissionManager::instance(),
         None,
-        config.get_goose_mode().unwrap_or_default(),
         true,
         GoosePlatform::GooseCli,
     );
@@ -1556,7 +1569,7 @@ async fn handle_mcp_probe(extension_command: String, script_path: Option<String>
             std::env::current_dir()?,
             "MCP Probe".to_string(),
             goose::session::session_manager::SessionType::Hidden,
-            agent.config.goose_mode,
+            config.get_goose_mode().unwrap_or_default(),
         )
         .await?;
     let session_id = session.id.as_str();
@@ -1564,44 +1577,36 @@ async fn handle_mcp_probe(extension_command: String, script_path: Option<String>
 
     let mut results = Vec::new();
     for step in script.steps {
+        let lease = agent.extension_manager.current_lease(session_id).await?;
         let result = match step {
             McpProbeStep::ListTools => serde_json::json!({
                 "action": "listTools",
-                "result": agent.extension_manager.list_tools_from_extension(
-                    session_id,
+                "result": lease.list_tools_from_extension(
                     "probe",
                     CancellationToken::new(),
                 ).await?,
             }),
             McpProbeStep::ListPrompts => serde_json::json!({
                 "action": "listPrompts",
-                "result": agent.extension_manager.list_prompts_from_extension(
-                    session_id,
+                "result": lease.list_prompts_from_extension(
                     "probe",
                     CancellationToken::new(),
                 ).await?,
             }),
             McpProbeStep::ListResources => serde_json::json!({
                 "action": "listResources",
-                "result": agent.extension_manager.list_resources_result_from_extension(
-                    session_id,
+                "result": lease.list_resources_result_from_extension(
                     "probe",
                     CancellationToken::new(),
                 ).await?,
             }),
             McpProbeStep::CallTool { name, arguments } => {
                 let scoped_name = format!("probe__{name}");
-                let ctx = ToolCallContext::new(
-                    session_id.to_string(),
-                    Some(std::env::current_dir()?),
-                    Some("mcp-probe-tool-call".to_string()),
-                );
-                let result = agent
-                    .extension_manager
-                    .dispatch_tool_call(
-                        &ctx,
+                let result = lease
+                    .call(
                         rmcp::model::CallToolRequestParams::new(scoped_name)
                             .with_arguments(arguments),
+                        CallRequest::new("mcp-probe-tool-call"),
                         CancellationToken::new(),
                     )
                     .await?
@@ -2438,7 +2443,8 @@ async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
             shell,
             name,
             default,
-        } => handle_term_init(shell, name, default).await,
+            include_history,
+        } => handle_term_init(shell, name, default, include_history).await,
         TermCommand::Log { command } => handle_term_log(command).await,
         TermCommand::Run { prompt } => handle_term_run(prompt).await,
         TermCommand::Info => handle_term_info().await,
@@ -2777,7 +2783,7 @@ async fn handle_default_session() -> Result<()> {
     let goose_mode = Config::global().get_goose_mode().unwrap_or_default();
     let session_id = get_or_create_session_id(None, false, false, goose_mode).await?;
 
-    let mut session = build_session(SessionBuilderConfig {
+    let mut session = match try_build_session(SessionBuilderConfig {
         session_id,
         resume: false,
         fork: false,
@@ -2800,7 +2806,16 @@ async fn handle_default_session() -> Result<()> {
         container: None,
         stats: false,
     })
-    .await;
+    .await
+    {
+        Ok(session) => session,
+        Err(error) if is_provider_unavailable_error(&error) => loop {
+            if configure_provider_dialog().await? {
+                return Ok(());
+            }
+        },
+        Err(error) => return Err(error),
+    };
     session.interactive(None).await
 }
 

@@ -2,10 +2,10 @@ pub use goose_context_management::structured;
 
 use crate::conversation::message::MessageMetadata;
 use crate::conversation::message::{Message, MessageContent};
-use crate::conversation::{Conversation, merge_consecutive_messages};
+use crate::conversation::{merge_consecutive_messages, Conversation};
 use crate::providers::base::Provider;
 #[cfg(test)]
-use crate::providers::base::{MessageStream, stream_from_single_message};
+use crate::providers::base::{stream_from_single_message, MessageStream};
 use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
 use goose_providers::conversation::token_usage::ProviderUsage;
@@ -15,14 +15,31 @@ use indoc::indoc;
 use rmcp::model::Role;
 #[cfg(test)]
 use rmcp::model::{Annotations, ContentBlock, TextContent};
-use std::sync::Arc;
-use tokio::task::JoinHandle;
 use tracing::info;
 use tracing::log::warn;
 
 pub use goose_context_management::DEFAULT_COMPACTION_THRESHOLD;
 
+/// Starts compaction with headroom below OpenAI's long-context price tier
+/// (above 272k input tokens). This is not a maximum request size.
+pub const DEFAULT_AUTO_COMPACT_TOKEN_LIMIT: usize = 225_000;
+
 pub(crate) const TOOLCALL_SUMMARIZATION_BATCH_SIZE: usize = 10;
+
+/// The configured threshold, lowered so compaction starts by the token limit.
+pub fn auto_compact_threshold(context_limit: usize) -> f64 {
+    let config = Config::global();
+    let threshold = config
+        .get_param::<f64>("GOOSE_AUTO_COMPACT_THRESHOLD")
+        .unwrap_or(DEFAULT_COMPACTION_THRESHOLD);
+    if threshold <= 0.0 || threshold >= 1.0 || context_limit == 0 {
+        return threshold;
+    }
+    let token_limit = config
+        .get_param::<usize>("GOOSE_AUTO_COMPACT_TOKEN_LIMIT")
+        .unwrap_or(DEFAULT_AUTO_COMPACT_TOKEN_LIMIT);
+    threshold.min(token_limit as f64 / context_limit as f64)
+}
 
 pub(crate) fn tool_pair_summarization_enabled() -> bool {
     Config::global()
@@ -489,106 +506,6 @@ pub async fn summarize_tool_call(
     Ok(response.with_generated_id())
 }
 
-pub fn maybe_summarize_tool_pairs(
-    provider: Arc<dyn Provider>,
-    model_config: ModelConfig,
-    session_id: String,
-    conversation: &Conversation,
-    cutoff: usize,
-    protect_last_n: usize,
-) -> Option<JoinHandle<Vec<(Message, String)>>> {
-    if !tool_pair_summarization_enabled() || provider.manages_own_context() {
-        return None;
-    }
-
-    let tool_ids = tool_ids_to_summarize(&conversation, cutoff, protect_last_n);
-    if tool_ids.is_empty() {
-        return None;
-    }
-
-    // A request/response message can contain multiple parallel tool calls.
-    // Summarization formats whole messages, so sibling IDs in the same pair
-    // must be compacted as one group or we'd issue duplicate summary calls.
-    let mut seen_message_pairs = std::collections::HashSet::new();
-    let mut grouped_tool_ids = Vec::new();
-    for tool_id in tool_ids {
-        let pair = match agent_visible_tool_pair(&conversation, &tool_id) {
-            Ok(pair) => pair,
-            Err(error) => {
-                warn!("Failed to identify tool pair for summarization: {}", error);
-                continue;
-            }
-        };
-        if pair.len() != 2 {
-            warn!(
-                "Expected a tool request/response pair for '{}', found {} messages",
-                tool_id,
-                pair.len()
-            );
-            continue;
-        }
-
-        let request_ids: std::collections::HashSet<&str> = pair
-            .iter()
-            .flat_map(|message| message.get_tool_request_ids())
-            .collect();
-        let response_ids: std::collections::HashSet<&str> = pair
-            .iter()
-            .flat_map(|message| message.get_tool_response_ids())
-            .collect();
-        if request_ids != response_ids {
-            warn!(
-                "Tool pair for '{}' has siblings answered elsewhere; skipping",
-                tool_id
-            );
-            continue;
-        }
-
-        let mut message_ids = pair
-            .iter()
-            .filter_map(|message| message.id.clone())
-            .collect::<Vec<_>>();
-        if message_ids.len() != 2 {
-            warn!(
-                "Expected two persisted messages for tool pair '{}', found {}",
-                tool_id,
-                message_ids.len()
-            );
-            continue;
-        }
-        message_ids.sort_unstable();
-        if seen_message_pairs.insert(message_ids) {
-            grouped_tool_ids.push(tool_id);
-        }
-    }
-
-    if grouped_tool_ids.is_empty() {
-        return None;
-    }
-
-    let conversation = conversation.clone();
-    Some(tokio::spawn(async move {
-        let mut results = Vec::new();
-        for tool_id in grouped_tool_ids {
-            match summarize_tool_call(
-                provider.as_ref(),
-                &model_config,
-                &session_id,
-                &conversation,
-                &tool_id,
-            )
-            .await
-            {
-                Ok(summary) => results.push((summary, tool_id)),
-                Err(e) => {
-                    warn!("Failed to summarize tool pair: {}", e);
-                }
-            }
-        }
-        results
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,7 +542,6 @@ mod tests {
         config: ModelConfig,
         max_tool_responses: Option<usize>,
         captured_system: std::sync::Mutex<Option<String>>,
-        calls: std::sync::atomic::AtomicUsize,
     }
 
     impl MockProvider {
@@ -646,17 +562,12 @@ mod tests {
                 },
                 max_tool_responses: None,
                 captured_system: std::sync::Mutex::new(None),
-                calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
         fn with_max_tool_responses(mut self, max: usize) -> Self {
             self.max_tool_responses = Some(max);
             self
-        }
-
-        fn call_count(&self) -> usize {
-            self.calls.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
 
@@ -673,8 +584,6 @@ mod tests {
             messages: &[Message],
             _tools: &[Tool],
         ) -> Result<MessageStream, ProviderError> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *self.captured_system.lock().unwrap() = Some(system.to_string());
             // If max_tool_responses is set, fail if we have too many
             if let Some(max) = self.max_tool_responses {
@@ -1174,58 +1083,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parallel_tool_calls_share_one_summary_request() {
-        let _guard = env_lock::lock_env([("GOOSE_TOOL_PAIR_SUMMARIZATION", Some("true"))]);
-        let provider = Arc::new(MockProvider::new(
-            Message::assistant().with_text("summary"),
-            1000,
-        ));
-        let mut messages = vec![Message::user().with_text("start")];
-        for index in 0..7 {
-            let first_id = format!("tool_{index}a");
-            let second_id = format!("tool_{index}b");
-            messages.push(
-                Message::assistant()
-                    .with_tool_request(&first_id, Ok(CallToolRequestParams::new("read_file")))
-                    .with_tool_request(&second_id, Ok(CallToolRequestParams::new("read_file")))
-                    .with_id(format!("request_{index}")),
-            );
-            messages.push(
-                Message::user()
-                    .with_tool_response(
-                        &first_id,
-                        Ok(rmcp::model::CallToolResult::success(vec![
-                            ContentBlock::text("first result"),
-                        ])),
-                    )
-                    .with_tool_response(
-                        &second_id,
-                        Ok(rmcp::model::CallToolResult::success(vec![
-                            ContentBlock::text("second result"),
-                        ])),
-                    )
-                    .with_id(format!("response_{index}")),
-            );
-        }
-
-        let conversation = Conversation::new_unvalidated(messages);
-        let summaries = maybe_summarize_tool_pairs(
-            provider.clone(),
-            provider.config.clone(),
-            "test-session-id".to_string(),
-            &conversation,
-            2,
-            0,
-        )
-        .unwrap()
-        .await
-        .unwrap();
-
-        assert_eq!(summaries.len(), 5);
-        assert_eq!(provider.call_count(), 5);
-    }
-
-    #[tokio::test]
     async fn test_progressive_removal_on_context_exceeded() {
         let response_message = Message::assistant().with_text("<mock summary>");
         // Set max to 2 tool responses - will trigger progressive removal
@@ -1270,7 +1127,7 @@ mod tests {
         assert_eq!(compute_tool_call_cutoff(128_000, 0.8), 15); // 102K effective
         assert_eq!(compute_tool_call_cutoff(200_000, 0.8), 24); // 160K effective
         assert_eq!(compute_tool_call_cutoff(1_000_000, 0.8), 120); // 800K effective
-        // Clamp at minimum
+                                                                   // Clamp at minimum
         assert_eq!(compute_tool_call_cutoff(50_000, 0.8), 10);
         assert_eq!(compute_tool_call_cutoff(10_000, 0.8), 10);
         // Clamp at maximum (500)
@@ -1278,7 +1135,7 @@ mod tests {
         // Lower compaction threshold means earlier summarization
         assert_eq!(compute_tool_call_cutoff(200_000, 0.3), 10); // 60K effective
         assert_eq!(compute_tool_call_cutoff(1_000_000, 0.5), 75); // 500K effective
-        // Invalid threshold falls back to default 0.8
+                                                                  // Invalid threshold falls back to default 0.8
         assert_eq!(compute_tool_call_cutoff(200_000, 0.0), 24); // falls back to 0.8
         assert_eq!(compute_tool_call_cutoff(200_000, -1.0), 24); // falls back to 0.8
     }

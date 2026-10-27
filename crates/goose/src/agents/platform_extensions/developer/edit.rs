@@ -359,26 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn test_file_read_partial() {
-        let dir = setup();
-        let path = dir.path().join("read.txt");
-        fs::write(&path, "line1\nline2\nline3").unwrap();
-        let tools = EditTools::new();
-
-        let result = tools.file_read_with_cwd(
-            FileReadParams {
-                path: path.to_string_lossy().to_string(),
-                line: Some(2),
-                limit: Some(1),
-            },
-            None,
-        );
-
-        assert!(!result.is_error.unwrap_or(false));
-        assert_eq!(extract_text(&result), "line2\n");
-    }
-
-    #[test]
     fn test_file_write_new() {
         let dir = setup();
         let path = dir.path().join("new_file.txt");

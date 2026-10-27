@@ -25,8 +25,8 @@ impl HandleDispatchFrom<Client> for GooseAcpHandler {
             agent.start_thinking_effort_update_forwarder(&cx).await;
 
             // InitializeRequest runs inline: it sets connection-scoped state
-            // (client fs/terminal capabilities) that later handlers read with
-            // defaults, so a pipelined NewSessionRequest must not race ahead of it.
+            // that later handlers read with defaults, so a pipelined
+            // NewSessionRequest must not race ahead of it.
             MatchDispatchFrom::new(message, &cx)
                 .if_request(
                     |req: InitializeRequest, responder: Responder<InitializeResponse>| async {
@@ -244,7 +244,7 @@ impl HandleDispatchFrom<Client> for GooseAcpHandler {
                                             let session_agent =
                                                 agent_bg.get_session_agent(&session_id_bg.0).await?;
                                             let provider = session_agent
-                                                .provider()
+                                                .provider(&session_id_bg.0)
                                                 .await
                                                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                                             let provider_name = provider.get_name().to_string();
