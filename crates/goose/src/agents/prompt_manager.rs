@@ -621,10 +621,25 @@ mod tests {
             .unwrap();
         assert!(claude.contains("Keep replies short."));
         assert!(claude.contains("# Extensions"));
+        assert!(claude.contains("Do not repeat the same failed tool call."));
+        assert!(claude.contains("developer instructions below"));
         assert!(!claude.contains("Finish verification before you answer."));
+        assert!(!claude.contains("async function run()"));
         assert!(gpt.contains("Finish verification before you answer."));
-        assert!(other.contains("Match the request before you stop."));
+        assert!(gpt.contains("Do not repeat the same failed tool call."));
+        assert!(other.contains("Be concise and factual."));
+        assert!(other.contains("Do not repeat the same failed tool call."));
         assert!(!other.contains("Keep replies short."));
+        let code_mode = manager
+            .builder()
+            .with_family_prompts(true)
+            .with_code_execution_mode(true)
+            .with_model("Claude-Sonnet")
+            .build()
+            .unwrap();
+        assert!(code_mode.contains("async function run()"));
+        assert!(code_mode.contains("Do not repeat the same failed tool call."));
+        assert!(!code_mode.contains("developer instructions below"));
         assert_eq!(family_template_name("chatgpt_codex"), "family_gpt.md");
         assert_eq!(family_template_name(""), "family_default.md");
     }

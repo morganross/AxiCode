@@ -13,19 +13,19 @@ static TEMPLATE_REGISTRY: &[(&str, &str)] = &[
     ),
     (
         "family_anthropic.md",
-        "Rich system prompt used for Claude-family models when family prompts are enabled",
+        "Tone for Claude-family models when family prompts are enabled",
     ),
     (
         "family_gpt.md",
-        "Rich system prompt used for GPT and Codex models when family prompts are enabled",
+        "Answer shape for GPT and Codex models when family prompts are enabled",
     ),
     (
         "family_default.md",
-        "Rich system prompt used for other models when family prompts are enabled",
+        "Tone for other models when family prompts are enabled",
     ),
     (
         "prompt_context.md",
-        "Shared extension and response section appended to a family prompt",
+        "Shared working rules appended to a family prompt",
     ),
     (
         "compaction.md",
