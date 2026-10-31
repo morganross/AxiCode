@@ -451,8 +451,17 @@ fn discover_skills_with_config(working_dir: Option<&Path>, config: &Config) -> V
     let mut sources = goose_agent::skills::discover_skills(roots);
     let mut seen: HashSet<_> = sources.iter().map(|source| source.name.clone()).collect();
 
+    // The AxiSearch extension replaces the shell-based web-search skill while it is enabled.
+    let axisearch_enabled = crate::config::extensions::configured_enabled_state(
+        config,
+        crate::agents::platform_extensions::axisearch::EXTENSION_NAME,
+    ) == Some(true);
+
     for content in builtin::get_all() {
         if let Some(source) = parse_skill_content(content, &PathBuf::new(), true, true) {
+            if axisearch_enabled && source.name == "web-search" {
+                continue;
+            }
             if !seen.contains(&source.name) {
                 seen.insert(source.name.clone());
                 let path = format!("builtin://skills/{}", source.name);

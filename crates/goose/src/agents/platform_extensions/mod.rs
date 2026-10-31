@@ -2,6 +2,7 @@
 pub mod analyze;
 #[cfg(feature = "platform-apps")]
 pub mod apps;
+pub mod axisearch;
 #[cfg(feature = "chat-recall")]
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
@@ -194,6 +195,19 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: false,
                 hidden: false,
                 client_factory: |ctx| Some(Box::new(tom::TomClient::new(ctx).unwrap())),
+            },
+        );
+
+        map.insert(
+            axisearch::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: axisearch::EXTENSION_NAME,
+                display_name: "AxiSearch",
+                description: "Search the web and scientific sources through an AxiSearch service",
+                default_enabled: false,
+                unprefixed_tools: false,
+                hidden: false,
+                client_factory: |ctx| Some(Box::new(axisearch::AxiSearchClient::new(ctx).unwrap())),
             },
         );
 
