@@ -1074,18 +1074,23 @@ impl GooseAcpAgent {
             session_needs_update = true;
         }
 
-        if !mcp_servers.is_empty() {
-            let extensions = mcp_server_configs(mcp_servers)?;
-            self.session_manager
-                .update_enabled_extensions(&session.id, |selected| {
-                    for extension in extensions {
-                        push_or_replace_extension(selected, extension);
-                    }
-                })
-                .await
-                .internal_err_ctx("Failed to add the client's MCP servers")?;
-            session_needs_update = true;
-        }
+        let extensions = mcp_server_configs(mcp_servers)?;
+        self.session_manager
+            .set_ide_managed_extensions(&session.id, extensions.clone())
+            .internal_err_ctx("Failed to retain the client's runtime MCP connections")?;
+        let extensions_changed = self
+            .session_manager
+            .update_enabled_extensions(&session.id, |selected| {
+                let previous = selected.clone();
+                selected.retain(|config| !crate::session::ide_mcp::is_managed_name(&config.name()));
+                for extension in extensions {
+                    push_or_replace_extension(selected, extension);
+                }
+                *selected != previous
+            })
+            .await
+            .internal_err_ctx("Failed to reconcile the client's MCP servers")?;
+        session_needs_update |= extensions_changed;
 
         if session_needs_update {
             let session_id = session.id.clone();
@@ -1125,6 +1130,9 @@ impl GooseAcpAgent {
             goose_extensions,
             recipe_extensions,
         )?;
+        self.session_manager
+            .set_ide_managed_extensions(&session.id, extensions.clone())
+            .internal_err_ctx("Failed to retain the client's runtime MCP connections")?;
         enabled_extensions_data(session, extensions)
     }
 

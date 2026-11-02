@@ -260,7 +260,10 @@ pub(crate) fn family_template_name(model: &str) -> &'static str {
     }
 }
 
-fn render_family_prompt<T: Serialize>(model: &str, context: &T) -> Result<String, minijinja::Error> {
+fn render_family_prompt<T: Serialize>(
+    model: &str,
+    context: &T,
+) -> Result<String, minijinja::Error> {
     let body = prompt_template::template_source(family_template_name(model))?;
     let context_block = prompt_template::template_source("prompt_context.md")?;
     prompt_template::render_string(&format!("{body}\n\n{context_block}"), context)

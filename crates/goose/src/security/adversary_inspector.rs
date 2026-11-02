@@ -257,7 +257,11 @@ impl AdversaryInspector {
         let Ok(session) = self.session_manager.get_session(session_id, false).await else {
             return Ok((true, "No provider available".to_string()));
         };
-        let Ok(provider) = self.providers.provider_for(&session).await else {
+        let Ok(provider) = self
+            .providers
+            .provider_for_runtime(&session, &self.session_manager)
+            .await
+        else {
             return Ok((true, "No provider available".to_string()));
         };
 

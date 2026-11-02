@@ -488,6 +488,38 @@ impl SessionManager {
         self.storage.get_session(id, include_messages).await
     }
 
+    pub(crate) fn set_ide_managed_extensions(
+        &self,
+        id: &str,
+        extensions: Vec<ExtensionConfig>,
+    ) -> Result<()> {
+        let selected = extensions
+            .into_iter()
+            .filter(|config| crate::session::ide_mcp::is_managed_name(&config.name()))
+            .collect();
+        self.storage
+            .ide_mcp
+            .write()
+            .map_err(|_| anyhow::anyhow!("IDE runtime connection state unavailable"))?
+            .insert(id.to_owned(), selected);
+        Ok(())
+    }
+
+    pub(crate) fn resolve_ide_managed_extensions(
+        &self,
+        id: &str,
+        selected: Vec<ExtensionConfig>,
+    ) -> Vec<ExtensionConfig> {
+        let runtime = self
+            .storage
+            .ide_mcp
+            .read()
+            .ok()
+            .and_then(|all| all.get(id).cloned())
+            .unwrap_or_default();
+        crate::session::ide_mcp::resolve(selected, &runtime)
+    }
+
     pub fn update(&self, id: &str) -> SessionUpdateBuilder<'_> {
         SessionUpdateBuilder::new(self, id.to_string())
     }
@@ -558,7 +590,11 @@ impl SessionManager {
     }
 
     pub async fn delete_session(&self, id: &str) -> Result<()> {
-        self.storage.delete_session(id).await
+        self.storage.delete_session(id).await?;
+        if let Ok(mut all) = self.storage.ide_mcp.write() {
+            all.remove(id);
+        }
+        Ok(())
     }
 
     pub async fn get_insights(&self) -> Result<SessionInsights> {
@@ -935,6 +971,7 @@ pub struct SessionStorage {
     initialized: tokio::sync::OnceCell<()>,
     session_dir: PathBuf,
     action_required: Arc<crate::action_required_manager::ActionRequiredManager>,
+    ide_mcp: std::sync::RwLock<HashMap<String, Vec<ExtensionConfig>>>,
 }
 
 pub(crate) fn role_to_string(role: &Role) -> &'static str {
@@ -1197,6 +1234,7 @@ impl SessionStorage {
             initialized: tokio::sync::OnceCell::new(),
             session_dir,
             action_required: Arc::new(crate::action_required_manager::ActionRequiredManager::new()),
+            ide_mcp: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -1218,6 +1256,7 @@ impl SessionStorage {
                         warn!("Failed to import some legacy sessions: {}", e);
                     }
                 }
+                crate::session::ide_mcp::repair_legacy(&self.pool).await?;
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
@@ -1475,7 +1514,7 @@ impl SessionStorage {
         .bind(&*session.working_dir.to_string_lossy())
         .bind(session.created_at)
         .bind(session.updated_at)
-        .bind(serde_json::to_string(&session.extension_data)?)
+        .bind(crate::session::ide_mcp::persisted_json(&session.extension_data)?)
         .bind(session.usage.total_tokens)
         .bind(session.usage.input_tokens)
         .bind(session.usage.output_tokens)
@@ -2115,7 +2154,7 @@ impl SessionStorage {
             q = q.bind(wd.to_string_lossy().to_string());
         }
         if let Some(ed) = builder.extension_data {
-            q = q.bind(serde_json::to_string(&ed)?);
+            q = q.bind(crate::session::ide_mcp::persisted_json(&ed)?);
         }
         if let Some(u) = builder.usage {
             q = q
@@ -2217,7 +2256,11 @@ impl SessionStorage {
         sqlx::query(AssertSqlSafe(format!(
             "UPDATE sessions SET {column} = ?, updated_at = datetime('now') WHERE id = ?"
         )))
-        .bind(serde_json::to_string(&value)?)
+        .bind(if column == "extension_data" {
+            crate::session::ide_mcp::persisted_json(&value)?
+        } else {
+            serde_json::to_string(&value)?
+        })
         .bind(session_id)
         .execute(&mut *tx)
         .await?;

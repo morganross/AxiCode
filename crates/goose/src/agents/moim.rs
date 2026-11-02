@@ -59,7 +59,7 @@ pub async fn turn_context_message(
             match extension_manager
                 .get_context()
                 .providers
-                .provider_for(session)
+                .provider_for_runtime(session, &extension_manager.get_context().session_manager)
                 .await
             {
                 Ok(provider) => crate::context_limit::get_context_limit(

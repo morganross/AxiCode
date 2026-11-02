@@ -166,7 +166,9 @@ impl EnabledExtensionsState {
         config: &Config,
     ) -> Vec<ExtensionConfig> {
         let session = session_manager.get_session(session_id, false).await.ok();
-        Self::extensions_or_default(session.as_ref().map(|s| &s.extension_data), config)
+        let selected =
+            Self::extensions_or_default(session.as_ref().map(|s| &s.extension_data), config);
+        session_manager.resolve_ide_managed_extensions(session_id, selected)
     }
 }
 

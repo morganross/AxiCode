@@ -251,7 +251,7 @@ impl PlatformExtensionContext {
             .await
             .map_err(|e| e.to_string())?;
         self.providers
-            .provider_for(&session)
+            .provider_for_runtime(&session, &self.session_manager)
             .await
             .map_err(|e| e.to_string())
     }

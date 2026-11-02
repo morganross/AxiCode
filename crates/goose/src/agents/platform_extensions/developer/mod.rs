@@ -5,8 +5,8 @@ mod shell_output_streaming;
 mod shell_process;
 pub mod tree;
 
-use crate::agents::ToolCallContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
+use crate::agents::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
 use edit::{EditTools, FileEditParams, FileReadParams, FileWriteParams};
@@ -16,9 +16,9 @@ use rmcp::model::{
     Annotations, CallToolResult, ContentBlock, Implementation, InitializeResult, JsonObject,
     ListToolsResult, ServerCapabilities, TextContent, Tool, ToolAnnotations,
 };
-use schemars::{JsonSchema, schema_for};
+use schemars::{schema_for, JsonSchema};
 use serde_json::Value;
-use shell::{ShellOutput, ShellParams, ShellTool, shell_display_name};
+use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tree::{TreeParams, TreeTool};

@@ -229,7 +229,11 @@ impl ToolInspector for PermissionInspector {
         // LLM-based read-only detection for deferred SmartApprove candidates
         if !llm_detect_candidates.is_empty() {
             let provider = match self.session_manager.get_session(session_id, false).await {
-                Ok(session) => self.providers.provider_for(&session).await.ok(),
+                Ok(session) => self
+                    .providers
+                    .provider_for_runtime(&session, &self.session_manager)
+                    .await
+                    .ok(),
                 Err(_) => None,
             };
             let detected_request_ids: HashSet<String> = match provider {

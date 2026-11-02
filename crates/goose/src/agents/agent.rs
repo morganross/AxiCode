@@ -426,7 +426,10 @@ impl Agent {
             .session_manager
             .get_session(session_id, false)
             .await?;
-        self.config.providers.provider_for(&session).await
+        self.config
+            .providers
+            .provider_for_runtime(&session, &self.config.session_manager)
+            .await
     }
 
     pub async fn model_config_for_session(
@@ -1205,7 +1208,7 @@ impl Agent {
         let provider = self
             .config
             .providers
-            .provider_for(&session)
+            .provider_for_runtime(&session, &self.config.session_manager)
             .await
             .map_err(|error| provider_creation_error(error, "Could not create provider"))?;
 

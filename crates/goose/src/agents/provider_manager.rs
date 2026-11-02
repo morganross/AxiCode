@@ -21,6 +21,22 @@ pub struct ProviderManager {
 }
 
 impl ProviderManager {
+    pub(crate) async fn provider_for_runtime(
+        &self,
+        session: &Session,
+        manager: &crate::session::SessionManager,
+    ) -> Result<Arc<dyn Provider>> {
+        let mut runtime = session.clone();
+        let selected = EnabledExtensionsState::extensions_or_default(
+            Some(&runtime.extension_data),
+            Config::global(),
+        );
+        let resolved = manager.resolve_ide_managed_extensions(&session.id, selected);
+        use crate::session::extension_data::ExtensionState;
+        EnabledExtensionsState::new(resolved).to_extension_data(&mut runtime.extension_data)?;
+        self.provider_for(&runtime).await
+    }
+
     pub async fn provider_for(&self, session: &Session) -> Result<Arc<dyn Provider>> {
         let name = provider_name_for(session)?;
         let slot = self.slot(&session.id);

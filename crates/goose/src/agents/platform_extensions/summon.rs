@@ -970,6 +970,7 @@ impl SummonClient {
         FinalOutputTool::try_new(recipe.response.as_ref().unwrap().clone())
             .map_err(|e| format!("Invalid delegate response schema: {e}"))?;
 
+        let runtime_extensions = subagent_config.extensions.clone();
         let mut extension_data = ExtensionData::default();
         EnabledExtensionsState::new(subagent_config.extensions)
             .to_extension_data(&mut extension_data)
@@ -996,6 +997,10 @@ impl SummonClient {
             .apply()
             .await
             .map_err(|e| format!("Failed to save delegate configuration: {e}"))?;
+        self.context
+            .session_manager
+            .set_ide_managed_extensions(&child.id, runtime_extensions)
+            .map_err(|e| format!("Failed to retain delegate runtime connections: {e}"))?;
 
         self.context
             .session_manager
@@ -1243,9 +1248,12 @@ impl SummonClient {
     ) -> Result<SubagentConfig> {
         let mut extensions = resolve_extensions_for_new_session(
             recipe.extensions.as_deref(),
-            Some(EnabledExtensionsState::extensions_or_default(
-                Some(&session.extension_data),
-                Config::global(),
+            Some(self.context.session_manager.resolve_ide_managed_extensions(
+                &session.id,
+                EnabledExtensionsState::extensions_or_default(
+                    Some(&session.extension_data),
+                    Config::global(),
+                ),
             )),
         );
 

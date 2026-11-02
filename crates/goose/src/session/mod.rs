@@ -3,6 +3,7 @@ mod diagnostics;
 mod export_html;
 mod export_markdown;
 pub mod extension_data;
+pub(crate) mod ide_mcp;
 pub mod import_formats;
 mod last_message_snippet;
 mod legacy;

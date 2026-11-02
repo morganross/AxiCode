@@ -765,7 +765,7 @@ impl ExtensionManager {
                 Err(_) => false,
             },
         };
-        let extensions = selection(session)
+        let extensions = selection(session, &self.context.session_manager)
             .into_iter()
             .filter(|config| {
                 !(provider_runs_tool_loop
@@ -1079,7 +1079,7 @@ impl ExtensionManager {
             .session_manager
             .get_session(session_id, false)
             .await?;
-        Ok(selection(&session))
+        Ok(selection(&session, &self.context.session_manager))
     }
 
     pub async fn list_extensions(&self, session_id: &str) -> Result<Vec<String>> {
@@ -1097,10 +1097,13 @@ impl ExtensionManager {
     }
 }
 
-fn selection(session: &Session) -> Vec<ExtensionConfig> {
-    EnabledExtensionsState::from_extension_data(&session.extension_data)
-        .map(|state| state.extensions)
-        .unwrap_or_default()
+fn selection(session: &Session, manager: &crate::session::SessionManager) -> Vec<ExtensionConfig> {
+    manager.resolve_ide_managed_extensions(
+        &session.id,
+        EnabledExtensionsState::from_extension_data(&session.extension_data)
+            .map(|state| state.extensions)
+            .unwrap_or_default(),
+    )
 }
 
 #[cfg(test)]
@@ -2419,7 +2422,7 @@ mod tests {
 
         let successful = manager.apply(
             ExtensionMutation::Enable {
-                name: "analyze".to_string(),
+                name: crate::agents::platform_extensions::todo::EXTENSION_NAME.to_string(),
             },
             &session.id,
         );
@@ -2431,7 +2434,7 @@ mod tests {
         );
         let (successful, failed) = tokio::join!(successful, failed);
 
-        assert!(successful.is_ok());
+        assert!(successful.is_ok(), "{successful:?}");
         assert!(failed.is_err());
         let stored_session = manager
             .get_context()
@@ -2441,10 +2444,13 @@ mod tests {
             .unwrap();
         let stored_extensions =
             EnabledExtensionsState::from_extension_data(&stored_session.extension_data).unwrap();
-        assert!(stored_extensions
-            .extensions
-            .iter()
-            .any(|config| config.key() == "analyze"));
+        assert!(
+            stored_extensions
+                .extensions
+                .iter()
+                .any(|config| config.key()
+                    == crate::agents::platform_extensions::todo::EXTENSION_NAME)
+        );
     }
 
     #[test]
