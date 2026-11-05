@@ -23,7 +23,7 @@ use goose_providers::model::ModelConfig;
 use goose_providers::request_log::{start_log, LoggerHandleExt};
 use rmcp::model::Tool;
 
-const CURSOR_AGENT_PROVIDER_NAME: &str = "cursor-agent";
+pub(crate) const CURSOR_AGENT_PROVIDER_NAME: &str = "cursor-agent";
 pub const CURSOR_AGENT_DEFAULT_MODEL: &str = "auto";
 // Fallback when `cursor-agent models` cannot be queried.
 pub const CURSOR_AGENT_KNOWN_MODELS: &[&str] = &[

@@ -178,7 +178,11 @@ fn base_model_config_from_user_config(
         supports_vision: None,
         request_headers: None,
     };
-    if provider_name != goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME {
+    // Cursor owns these exact model IDs. The CLI receives model_name as
+    // --model, so stripping its effort suffix changes the requested route.
+    if provider_name != goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME
+        && provider_name != crate::providers::cursor_agent::CURSOR_AGENT_PROVIDER_NAME
+    {
         model.normalize_effort_suffix();
     }
     Ok(model)
@@ -419,4 +423,16 @@ mod canonical_vision_tests {
 
         assert_eq!(model.supports_vision, None);
     }
+}
+
+
+#[cfg(test)]
+#[test]
+fn cursor_model_ids_keep_native_effort_variants() {
+    for model in ["gpt-5.6-luna-none", "gpt-5.6-luna-high", "gemini-3.8-flash-low"] {
+        let config = base_model_config_from_user_config("cursor-agent", model).unwrap();
+        assert_eq!(config.model_name, model);
+    }
+    let config = base_model_config_from_user_config("openai", "gpt-5.6-luna-none").unwrap();
+    assert_eq!(config.model_name, "gpt-5.6-luna");
 }
