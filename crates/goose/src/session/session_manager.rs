@@ -1050,16 +1050,21 @@ fn deserialize_session_model_config(
     json: &str,
 ) -> Option<ModelConfig> {
     let mut model_config: ModelConfig = serde_json::from_str(json).ok()?;
-    // TODO: Remove this workaround once ModelConfig guarantees deserialize(serialize(config)) == config.
-    if provider_name == Some(goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME) {
+    // These providers own exact model identifiers, including any effort suffix.
+    // The generic decoder can normalize the identifier and synthesize an effort.
+    if matches!(
+        provider_name,
+        Some(goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME)
+            | Some(crate::providers::cursor_agent::CURSOR_AGENT_PROVIDER_NAME)
+    ) {
         #[derive(Deserialize)]
-        struct AzurePersistedFields {
+        struct ExactPersistedFields {
             model_name: String,
             #[serde(default)]
             request_params: Option<HashMap<String, serde_json::Value>>,
         }
 
-        let persisted: AzurePersistedFields = serde_json::from_str(json).ok()?;
+        let persisted: ExactPersistedFields = serde_json::from_str(json).ok()?;
         model_config.model_name = persisted.model_name;
         model_config.request_params = persisted.request_params;
     }
@@ -3310,6 +3315,18 @@ mod tests {
         assert_eq!(config.model_name, "gpt-5-high");
         assert_eq!(config.thinking_effort(), None);
         assert!(!json.contains("context_limit"));
+    }
+
+    #[test]
+    fn cursor_session_model_config_keeps_exact_model_id() {
+        let config = deserialize_session_model_config(
+            Some(crate::providers::cursor_agent::CURSOR_AGENT_PROVIDER_NAME),
+            r#"{"model_name":"gpt-5.6-luna-none","temperature":null,"max_tokens":null,"toolshim":false,"toolshim_model":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.model_name, "gpt-5.6-luna-none");
+        assert_eq!(config.thinking_effort(), None);
     }
 
     #[test]
