@@ -152,6 +152,10 @@ rustls-tls = [
     "goose-mcp?/rustls-tls",
     "goose-providers/rustls-tls",
 ]
+rustls-ring-tls = [
+    "axum-server/tls-rustls-no-provider",
+    "goose/rustls-ring-tls",
+]
 native-tls = [
     "dep:axum-server",
     "reqwest/native-tls",

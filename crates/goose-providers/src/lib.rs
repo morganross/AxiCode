@@ -1,6 +1,10 @@
 #[cfg(all(
     feature = "live-websocket",
-    not(any(feature = "rustls-tls", feature = "native-tls"))
+    not(any(
+        feature = "rustls-tls",
+        feature = "rustls-ring-tls",
+        feature = "native-tls"
+    ))
 ))]
 compile_error!("feature `live-websocket` requires either `rustls-tls` or `native-tls`");
 

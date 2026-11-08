@@ -1,5 +1,5 @@
 pub mod auth;
-#[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+#[cfg(any(feature = "rustls-tls-common", feature = "native-tls"))]
 pub mod tls;
 
 use std::sync::Arc;

@@ -35,6 +35,9 @@ async fn run() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "rustls-ring-tls")]
+    goose::install_rustls_provider();
+
     #[cfg(windows)]
     enable_windows_vt_processing();
 

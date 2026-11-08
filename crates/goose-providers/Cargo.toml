@@ -22,6 +22,10 @@ rustls-tls = [
     "reqwest/rustls",
     "rmcp/reqwest",
 ]
+rustls-ring-tls = [
+    "reqwest/rustls-no-provider",
+    "rmcp/reqwest-tls-no-provider",
+]
 live-websocket = ["dep:reqwest-websocket"]
 native-tls = [
     "dep:pem",

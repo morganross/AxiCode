@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 use rcgen::{CertificateParams, DnType, KeyPair, SanType};
 use std::path::Path;
 
-#[cfg(feature = "rustls-tls")]
+#[cfg(feature = "rustls-tls-common")]
 pub type TlsConfig = axum_server::tls_rustls::RustlsConfig;
 
 #[cfg(feature = "native-tls")]
@@ -30,11 +30,10 @@ fn generate_self_signed_cert() -> Result<(rcgen::Certificate, KeyPair)> {
 }
 
 fn sha256_fingerprint(der: &[u8]) -> String {
-    #[cfg(feature = "rustls-tls")]
+    #[cfg(feature = "rustls-tls-common")]
     {
-        let sha256 = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, der);
-        sha256
-            .as_ref()
+        use sha2::{Digest, Sha256};
+        Sha256::digest(der)
             .iter()
             .map(|b| format!("{b:02X}"))
             .collect::<Vec<_>>()
@@ -62,9 +61,9 @@ pub async fn from_pem_files(cert_path: &Path, key_path: &Path) -> Result<TlsSetu
     let fingerprint = sha256_fingerprint(&der);
     println!("GOOSED_CERT_FINGERPRINT={fingerprint}");
 
-    #[cfg(feature = "rustls-tls")]
+    #[cfg(feature = "rustls-tls-common")]
     let config = {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        crate::install_rustls_provider();
         axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem.clone()).await?
     };
 
@@ -120,7 +119,7 @@ async fn load_cached_tls() -> Option<TlsSetup> {
     let der = pem::parse(&cert_pem).ok()?.into_contents();
     let fingerprint = sha256_fingerprint(&der);
 
-    #[cfg(feature = "rustls-tls")]
+    #[cfg(feature = "rustls-tls-common")]
     let config = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
         .await
         .ok()?;
@@ -143,8 +142,8 @@ fn try_save_tls_to_cache(cert_pem: &str, key_pem: &str) {
 }
 
 pub async fn self_signed_config() -> Result<TlsSetup> {
-    #[cfg(feature = "rustls-tls")]
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    #[cfg(feature = "rustls-tls-common")]
+    crate::install_rustls_provider();
 
     if let Some(cached) = load_cached_tls().await {
         println!("GOOSED_CERT_FINGERPRINT={}", cached.fingerprint);
@@ -161,7 +160,7 @@ pub async fn self_signed_config() -> Result<TlsSetup> {
 
     try_save_tls_to_cache(&cert_pem, &key_pem);
 
-    #[cfg(feature = "rustls-tls")]
+    #[cfg(feature = "rustls-tls-common")]
     let config = axum_server::tls_rustls::RustlsConfig::from_pem(
         cert_pem.into_bytes(),
         key_pem.into_bytes(),

@@ -5,11 +5,19 @@ use reqwest::{
     redirect::Policy,
     Client, Response, StatusCode,
 };
-#[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+#[cfg(any(
+    feature = "rustls-tls",
+    feature = "rustls-ring-tls",
+    feature = "native-tls"
+))]
 use reqwest::{Certificate, Identity};
 use serde_json::Value;
 use std::fmt;
-#[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+#[cfg(any(
+    feature = "rustls-tls",
+    feature = "rustls-ring-tls",
+    feature = "native-tls"
+))]
 use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -86,7 +94,11 @@ impl TlsConfig {
         self.client_identity.is_some() || self.ca_cert_path.is_some()
     }
 
-    #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+    #[cfg(any(
+        feature = "rustls-tls",
+        feature = "rustls-ring-tls",
+        feature = "native-tls"
+    ))]
     fn load_identity(&self) -> Result<Option<Identity>> {
         if let Some(cert_key_pair) = &self.client_identity {
             let cert_pem = read_to_string(&cert_key_pair.cert_path)
@@ -116,7 +128,11 @@ impl TlsConfig {
         }
     }
 
-    #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+    #[cfg(any(
+        feature = "rustls-tls",
+        feature = "rustls-ring-tls",
+        feature = "native-tls"
+    ))]
     fn load_ca_certificates(&self) -> Result<Vec<Certificate>> {
         match &self.ca_cert_path {
             Some(ca_path) => {
@@ -394,7 +410,11 @@ impl ApiClient {
     }
 
     /// Configure TLS settings on a reqwest ClientBuilder
-    #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+    #[cfg(any(
+        feature = "rustls-tls",
+        feature = "rustls-ring-tls",
+        feature = "native-tls"
+    ))]
     fn configure_tls(
         mut client_builder: reqwest::ClientBuilder,
         tls_config: &TlsConfig,
@@ -415,7 +435,11 @@ impl ApiClient {
     }
 
     /// Reject custom TLS settings when goose is compiled without a TLS backend.
-    #[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
+    #[cfg(not(any(
+        feature = "rustls-tls",
+        feature = "rustls-ring-tls",
+        feature = "native-tls"
+    )))]
     fn configure_tls(
         client_builder: reqwest::ClientBuilder,
         tls_config: &TlsConfig,

@@ -1,7 +1,25 @@
 #![recursion_limit = "256"]
 
-#[cfg(all(feature = "rustls-tls", feature = "native-tls"))]
-compile_error!("Features `rustls-tls` and `native-tls` are mutually exclusive");
+#[cfg(any(
+    all(feature = "rustls-tls-common", feature = "native-tls"),
+    all(feature = "rustls-tls", feature = "rustls-ring-tls")
+))]
+compile_error!("Select exactly one TLS backend");
+
+#[cfg(all(
+    feature = "rustls-tls-common",
+    not(any(feature = "rustls-tls", feature = "rustls-ring-tls"))
+))]
+compile_error!("Select a concrete Rustls crypto provider");
+
+#[cfg(any(feature = "rustls-tls", feature = "rustls-ring-tls"))]
+pub fn install_rustls_provider() {
+    #[cfg(feature = "rustls-tls")]
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    #[cfg(feature = "rustls-ring-tls")]
+    let provider = rustls::crypto::ring::default_provider();
+    let _ = provider.install_default();
+}
 
 pub mod acp;
 pub use goose_sdk_types::{custom_notifications, custom_requests};

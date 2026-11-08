@@ -1877,7 +1877,11 @@ async fn handle_serve_command(args: ServeCommandArgs) -> Result<()> {
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     if tls {
-        #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+        #[cfg(any(
+            feature = "rustls-tls",
+            feature = "rustls-ring-tls",
+            feature = "native-tls"
+        ))]
         {
             let tls_setup = goose::acp::transport::tls::setup_tls(
                 tls_cert_path.as_deref(),
@@ -1886,7 +1890,7 @@ async fn handle_serve_command(args: ServeCommandArgs) -> Result<()> {
             .await?;
             info!("Starting ACP server on https://{}", addr);
 
-            #[cfg(feature = "rustls-tls")]
+            #[cfg(any(feature = "rustls-tls", feature = "rustls-ring-tls"))]
             axum_server::bind_rustls(addr, tls_setup.config)
                 .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                 .await?;
@@ -1897,7 +1901,11 @@ async fn handle_serve_command(args: ServeCommandArgs) -> Result<()> {
                 .await?;
         }
 
-        #[cfg(not(any(feature = "rustls-tls", feature = "native-tls")))]
+        #[cfg(not(any(
+            feature = "rustls-tls",
+            feature = "rustls-ring-tls",
+            feature = "native-tls"
+        )))]
         {
             let _ = (tls_cert_path, tls_key_path);
             anyhow::bail!(

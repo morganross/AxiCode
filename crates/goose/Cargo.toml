@@ -56,17 +56,28 @@ cuda = ["local-inference", "candle-core/cuda", "candle-nn/cuda", "goose-provider
 vulkan = ["local-inference", "goose-providers/vulkan"]
 mlx = ["local-inference", "goose-providers/mlx"]
 rustls-tls = [
-    "dep:rustls",
-    "dep:rcgen",
-    "dep:axum-server",
-    "dep:aws-lc-rs",
+    "rustls-tls-common",
+    "rustls/aws_lc_rs",
     "axum-server/tls-rustls",
     "rcgen/aws_lc_rs",
     "reqwest/rustls",
     "rmcp/reqwest",
     "smithy-transport-reqwest?/rustls",
-    "sqlx/tls-rustls",
     "goose-providers/rustls-tls",
+]
+rustls-ring-tls = [
+    "rustls-tls-common",
+    "rustls/ring",
+    "axum-server/tls-rustls-no-provider",
+    "rcgen/ring",
+    "reqwest/rustls-no-provider",
+    "rmcp/reqwest-tls-no-provider",
+    "goose-providers/rustls-ring-tls",
+]
+rustls-tls-common = [
+    "dep:rustls",
+    "dep:rcgen",
+    "sqlx/tls-rustls",
     "goose-context-management/rustls-tls",
 ]
 native-tls = [
@@ -236,7 +247,6 @@ tracing-appender = { workspace = true }
 rustls = { workspace = true, optional = true }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem"], optional = true }
 axum-server = { workspace = true, optional = true }
-aws-lc-rs = { version = "1.17", default-features = false, optional = true }
 openssl = { version = "0.10.66", default-features = false, optional = true }
 pem = { version = "4.0.0", default-features = false, features = ["std"] }
 ring = { version = "0.17", default-features = false, features = ["alloc"] }

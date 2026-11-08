@@ -4197,7 +4197,6 @@ dependencies = [
  "async-stream",
  "async-trait",
  "aws-config",
- "aws-lc-rs",
  "aws-sdk-bedrockruntime",
  "aws-sdk-sagemakerruntime",
  "aws-smithy-runtime-api",
