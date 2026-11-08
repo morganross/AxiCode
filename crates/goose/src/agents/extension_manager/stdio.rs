@@ -85,17 +85,44 @@ pub(super) async fn spawn(mut command: Command, ctx: ConnectContext) -> Extensio
         ExtensionError::SetupError("failed to attach child process stderr".to_owned())
     })?;
 
+    #[cfg(windows)]
+    let startup_timeout = ctx
+        .capabilities
+        .host_info
+        .as_ref()
+        .filter(|host| host.client_name.as_deref() == Some("axiowl"))
+        .map(|_| ctx.timeout.min(std::time::Duration::from_secs(45)));
     let stderr_task = tokio::spawn(async move {
         let mut all_stderr = Vec::new();
         stderr.read_to_end(&mut all_stderr).await?;
         Ok::<String, std::io::Error>(String::from_utf8_lossy(&all_stderr).into())
     });
 
-    match McpClient::connect(transport, ctx).await {
-        Ok(client) => Ok(client),
-        Err(error) => Err(match stderr_task.await? {
-            Ok(stderr_content) => ProcessExit::new(stderr_content, error).into(),
-            Err(e) => e.into(),
-        }),
+    #[cfg(windows)]
+    let stderr_abort = stderr_task.abort_handle();
+    let setup = async move {
+        match McpClient::connect(transport, ctx).await {
+            Ok(client) => Ok(client),
+            Err(error) => Err(match stderr_task.await? {
+                Ok(stderr_content) => ProcessExit::new(stderr_content, error).into(),
+                Err(e) => e.into(),
+            }),
+        }
+    };
+    #[cfg(windows)]
+    if let Some(timeout) = startup_timeout {
+        // The IDE allows 60 seconds for session setup, which awaits all MCP starts.
+        // Bound both handshake and error collection without changing tool-call timeouts.
+        return match tokio::time::timeout(timeout, setup).await {
+            Ok(result) => result,
+            Err(_) => {
+                stderr_abort.abort();
+                Err(ExtensionError::SetupError(format!(
+                    "MCP stdio startup timed out after {} seconds",
+                    timeout.as_secs()
+                )))
+            }
+        };
     }
+    setup.await
 }

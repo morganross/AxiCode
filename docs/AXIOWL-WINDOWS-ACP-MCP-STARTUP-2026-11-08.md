@@ -1,0 +1,9 @@
+# Windows IDE ACP session startup and silent stdio tools
+
+AxiCode activates the session’s MCP extensions before responding to the IDE’s `session/new` request. RMCP’s legacy `initialize` can wait without a deadline. `ConnectContext.timeout` is retained for subsequent tool requests, so it did not bound that handshake. A failed initialization could also wait for stderr to reach EOF. Either wait can consume the IDE’s 60-second session setup budget.
+
+`crates/goose/src/agents/extension_manager/stdio.rs` now caps that Windows startup path for the existing `axiowl` ACP client at the lesser of 45 seconds and the tool’s configured timeout. The cap covers the handshake and error collection. On expiry the existing extension result reports the failure and the connection and stderr reader are cancelled. The client name comes from the existing ACP initialize request. Linux, macOS, other ACP clients, HTTP transport, saved tool settings and individual tool request timeouts retain their prior behavior.
+
+On November 8 the Windows development node’s installed Goose 1.56.0 at AxiCode revision `b5753426d4a10295c7a511f70e793639b58d5664` initialized ACP successfully. With a local MCP server that left legacy `initialize` open, it gave no session response within 65.06 seconds. A six-tool healthy control returned in 0.58 seconds. The historical A1 logs record the six starts but do not identify the child that stalled. Rust formatting and `git diff --check` passed for the patch. A rebuilt runtime and live A1 remain unverified. The Windows IDE checkout has the matching investigation in `docs/reports/IDE-WINDOWS-A1-A6-FORENSICS-2026-11-08.md`.
+
+Sources inspected were `crates/goose/src/acp/server/new_session.rs`, `crates/goose/src/acp/server.rs`, `crates/goose/src/agents/mcp_client.rs`, the stdio adapter, and the locked RMCP 3.4.1 client and child-process code.
