@@ -1,10 +1,58 @@
-use serde_json::Value;
+use serde_json::{json, Map, Value};
+
+use crate::config::ExtensionConfig;
 
 use crate::conversation::message::{Message, MessageContent};
 use crate::utils::safe_truncate;
 use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
 use goose_providers::errors::ProviderError;
 use rmcp::model::Role;
+
+pub(crate) fn mcp_servers(extensions: &[ExtensionConfig]) -> Map<String, Value> {
+    let mut mcp_servers = Map::new();
+
+    for extension in extensions {
+        match extension {
+            ExtensionConfig::StreamableHttp { uri, headers, .. } => {
+                let key = extension.key();
+                let mut config = serde_json::Map::new();
+                config.insert("type".to_string(), json!("http"));
+                config.insert("url".to_string(), json!(uri));
+                if !headers.is_empty() {
+                    config.insert("headers".to_string(), json!(headers));
+                }
+                mcp_servers.insert(key, Value::Object(config));
+            }
+            ExtensionConfig::Stdio {
+                cmd, args, envs, ..
+            } => {
+                let key = extension.key();
+                let mut config = serde_json::Map::new();
+                config.insert("type".to_string(), json!("stdio"));
+                config.insert("command".to_string(), json!(cmd));
+                if !args.is_empty() {
+                    config.insert("args".to_string(), json!(args));
+                }
+                let env_map = envs.get_env();
+                if !env_map.is_empty() {
+                    config.insert("env".to_string(), json!(env_map));
+                }
+                mcp_servers.insert(key, Value::Object(config));
+            }
+            _ => {}
+        }
+    }
+
+    mcp_servers
+}
+
+pub(crate) fn mcp_config_json(extensions: &[ExtensionConfig]) -> Option<String> {
+    let servers = mcp_servers(extensions);
+    if servers.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&json!({ "mcpServers": servers })).ok()
+}
 
 pub(crate) fn extract_usage_tokens(usage_info: &Value) -> Usage {
     let get = |key: &str| {

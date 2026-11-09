@@ -8,11 +8,14 @@ use crate::acp::{
     AcpProviderConfig, ACP_CURRENT_MODEL,
 };
 use crate::config::search_path::SearchPaths;
-use crate::config::{Config, GooseMode};
+use crate::config::{Config, ExtensionConfig, GooseMode};
 use crate::providers::base::{
     current_working_dir, ProviderDef, ProviderDescriptor, ProviderMetadata,
 };
 use crate::providers::catalog::ProviderSetupMetadata;
+use crate::providers::cli_common::mcp_servers;
+use crate::providers::private_file::write_private_file;
+use serde_json::json;
 
 pub(crate) const COPILOT_ACP_PROVIDER_NAME: &str = "copilot-acp";
 const COPILOT_ACP_DOC_URL: &str = "https://github.com/github/copilot-cli";
@@ -69,7 +72,34 @@ impl CopilotAcpProvider {
                 configured_model_for_provider(config, COPILOT_ACP_PROVIDER_NAME)
             };
 
-            let args = vec!["--acp".to_string()];
+            let (stdio, remote): (Vec<_>, Vec<_>) = extensions
+                .into_iter()
+                .partition(|extension| matches!(extension, ExtensionConfig::Stdio { .. }));
+            let mut resolved = Vec::with_capacity(stdio.len());
+            for extension in stdio {
+                resolved.push(extension.resolve(config).await?);
+            }
+            // Copilot's ACP session/new acknowledges stdio definitions without
+            // starting them. Its native launch flag supplies the same scoped servers.
+            let mut args = vec!["--acp".to_string()];
+            let mut servers = mcp_servers(&resolved);
+            let mcp_config = if servers.is_empty() {
+                None
+            } else {
+                for server in servers.values_mut() {
+                    server["tools"] = json!(["*"]);
+                }
+                let directory = tempfile::Builder::new()
+                    .prefix("goose-copilot-")
+                    .tempdir()?;
+                let file = directory.path().join("mcp.json");
+                write_private_file(&file, &json!({"mcpServers": servers}).to_string())?;
+                args.extend([
+                    "--additional-mcp-config".to_string(),
+                    format!("@{}", file.display()),
+                ]);
+                Some(directory)
+            };
             let session_config_options = if model == ACP_CURRENT_MODEL {
                 vec![]
             } else {
@@ -89,7 +119,7 @@ impl CopilotAcpProvider {
                 env: vec![],
                 env_remove: vec![],
                 work_dir: working_dir,
-                mcp_servers: extension_configs_to_mcp_servers(&extensions),
+                mcp_servers: extension_configs_to_mcp_servers(&remote),
                 session_mode_id: mode_mapping[&goose_mode].first().cloned(),
                 session_config_options,
                 model_config_option_id: Some("model".to_string()),
@@ -98,7 +128,9 @@ impl CopilotAcpProvider {
             };
 
             let metadata = Self::metadata();
-            AcpProvider::connect(metadata.name, goose_mode, provider_config).await
+            let provider = AcpProvider::connect(metadata.name, goose_mode, provider_config).await;
+            drop(mcp_config);
+            provider
         })
     }
 }

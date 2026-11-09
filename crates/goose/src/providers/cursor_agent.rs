@@ -12,6 +12,8 @@ use super::base::{
     stream_from_single_message, ConfigKey, MessageStream, Provider, ProviderDef, ProviderMetadata,
 };
 use super::catalog::ProviderSetupMetadata;
+use super::cli_common::mcp_config_json;
+use super::private_file::write_private_file;
 use super::utils::filter_extensions_from_system_prompt;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
@@ -43,6 +45,8 @@ pub struct CursorAgentProvider {
     command: PathBuf,
     #[serde(skip)]
     name: String,
+    #[serde(skip)]
+    mcp_plugin: Option<tempfile::TempDir>,
 }
 
 impl CursorAgentProvider {
@@ -56,6 +60,7 @@ impl CursorAgentProvider {
         Ok(Self {
             command: resolved_command,
             name: CURSOR_AGENT_PROVIDER_NAME.to_string(),
+            mcp_plugin: None,
         })
     }
 
@@ -279,6 +284,9 @@ impl CursorAgentProvider {
 
         let mut cmd = self.prepare_cli_command();
         cmd.arg("--model").arg(&model.model_name);
+        if let Some(directory) = &self.mcp_plugin {
+            cmd.arg("--plugin-dir").arg(directory.path().join("cursor"));
+        }
 
         cmd.arg("--print")
             .arg("--output-format")
@@ -493,13 +501,40 @@ impl goose_providers::base::ProviderDescriptor for CursorAgentProvider {
 
 impl ProviderDef for CursorAgentProvider {
     type Provider = Self;
+    const SESSION_BOUND: bool = true;
+    const RUNS_OWN_TOOL_LOOP: bool = true;
 
     fn from_env(
-        _extensions: Vec<crate::config::ExtensionConfig>,
+        extensions: Vec<crate::config::ExtensionConfig>,
         tls_config: Option<crate::providers::api_client::TlsConfig>,
     ) -> BoxFuture<'static, Result<Self::Provider>> {
-        Box::pin(Self::from_env(tls_config))
+        Box::pin(async move {
+            let mut provider = Self::from_env(tls_config).await?;
+            let config = crate::config::Config::global();
+            let mut resolved = Vec::with_capacity(extensions.len());
+            for extension in extensions {
+                resolved.push(extension.resolve(config).await?);
+            }
+            if let Some(servers) = mcp_config_json(&resolved) {
+                provider.mcp_plugin = Some(write_mcp_plugin(&servers)?);
+            }
+            Ok(provider)
+        })
     }
+}
+
+fn write_mcp_plugin(servers: &str) -> Result<tempfile::TempDir> {
+    let directory = tempfile::Builder::new().prefix("goose-cursor-").tempdir()?;
+    // Cursor derives its tool namespace from the plugin directory basename.
+    let plugin = directory.path().join("cursor");
+    let manifest = plugin.join(".cursor-plugin");
+    std::fs::create_dir_all(&manifest)?;
+    write_private_file(
+        &manifest.join("plugin.json"),
+        r#"{"name":"goose-session-tools","version":"1.0.0"}"#,
+    )?;
+    write_private_file(&plugin.join("mcp.json"), servers)?;
+    Ok(directory)
 }
 
 #[async_trait]
@@ -601,6 +636,7 @@ printf '%s\n' '{"type":"result","result":"ok"}'
         let provider = CursorAgentProvider {
             command: recording_cli(directory.path()),
             name: CURSOR_AGENT_PROVIDER_NAME.to_string(),
+            mcp_plugin: None,
         };
 
         let lines = provider
@@ -631,6 +667,40 @@ printf '%s\n' '{"type":"result","result":"ok"}'
     }
 
     #[tokio::test]
+    async fn selected_session_tools_are_forwarded_as_a_private_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = r#"{"mcpServers":{"axiowl_browser":{"command":"/fixture"}}}"#;
+        let plugin = write_mcp_plugin(config).unwrap();
+        let path = plugin.path().join("cursor");
+        let provider = CursorAgentProvider {
+            command: recording_cli(directory.path()),
+            name: CURSOR_AGENT_PROVIDER_NAME.to_string(),
+            mcp_plugin: Some(plugin),
+        };
+
+        provider
+            .execute_command(
+                &ModelConfig::new(CURSOR_AGENT_DEFAULT_MODEL),
+                "test instructions",
+                &[Message::user().with_text("test prompt")],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let args = fs::read_to_string(directory.path().join("args")).unwrap();
+        assert!(args.contains(&format!("--plugin-dir\n{}\n", path.display())));
+        let file = path.join("mcp.json");
+        assert_eq!(fs::read_to_string(&file).unwrap(), config);
+        assert_eq!(
+            fs::metadata(file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(provider);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
     async fn resumed_conversation_is_sent_on_stdin() {
         assert_prompt_uses_stdin(vec![
             Message::user().with_text("first turn"),
@@ -645,6 +715,7 @@ printf '%s\n' '{"type":"result","result":"ok"}'
         let provider = CursorAgentProvider {
             command: PathBuf::from("cursor-agent"),
             name: CURSOR_AGENT_PROVIDER_NAME.to_string(),
+            mcp_plugin: None,
         };
 
         assert!(provider.uses_local_session_naming());
@@ -656,6 +727,7 @@ printf '%s\n' '{"type":"result","result":"ok"}'
         let provider = CursorAgentProvider {
             command: recording_cli(directory.path()),
             name: CURSOR_AGENT_PROVIDER_NAME.to_string(),
+            mcp_plugin: None,
         };
 
         let (message, _) = provider

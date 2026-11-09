@@ -30,6 +30,7 @@ use crate::permission::{Permission, PermissionConfirmation};
 use crate::subprocess::configure_subprocess;
 use goose_providers::model::ModelConfig;
 
+use super::cli_common::mcp_config_json as claude_mcp_config_json;
 use super::cli_common::{error_from_event, extract_usage_tokens};
 use super::private_file::create_private_named_temp_file;
 
@@ -538,48 +539,6 @@ fn extract_model_aliases(response: Option<&Value>) -> Vec<String> {
 fn build_stream_json_input(content_blocks: &[Value], session_id: &str) -> String {
     let msg = json!({"type":"user","session_id":session_id,"message":{"role":"user","content":content_blocks}});
     serde_json::to_string(&msg).expect("serializing JSON content blocks cannot fail")
-}
-
-fn claude_mcp_config_json(extensions: &[ExtensionConfig]) -> Option<String> {
-    let mut mcp_servers = serde_json::Map::new();
-
-    for extension in extensions {
-        match extension {
-            ExtensionConfig::StreamableHttp { uri, headers, .. } => {
-                let key = extension.key();
-                let mut config = serde_json::Map::new();
-                config.insert("type".to_string(), json!("http"));
-                config.insert("url".to_string(), json!(uri));
-                if !headers.is_empty() {
-                    config.insert("headers".to_string(), json!(headers));
-                }
-                mcp_servers.insert(key, Value::Object(config));
-            }
-            ExtensionConfig::Stdio {
-                cmd, args, envs, ..
-            } => {
-                let key = extension.key();
-                let mut config = serde_json::Map::new();
-                config.insert("type".to_string(), json!("stdio"));
-                config.insert("command".to_string(), json!(cmd));
-                if !args.is_empty() {
-                    config.insert("args".to_string(), json!(args));
-                }
-                let env_map = envs.get_env();
-                if !env_map.is_empty() {
-                    config.insert("env".to_string(), json!(env_map));
-                }
-                mcp_servers.insert(key, Value::Object(config));
-            }
-            _ => {}
-        }
-    }
-
-    if mcp_servers.is_empty() {
-        return None;
-    }
-
-    serde_json::to_string(&json!({ "mcpServers": mcp_servers })).ok()
 }
 
 fn write_claude_temp_file(
